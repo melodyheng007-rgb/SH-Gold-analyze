@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+node_modules/
+dist/
+backend/data/uploads/
+backend/data/provider_settings.json
+backend/data/*.sqlite3
+.DS_Store
