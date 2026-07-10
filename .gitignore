@@ -6,5 +6,8 @@ node_modules/
 dist/
 backend/data/uploads/
 backend/data/provider_settings.json
+backend/data/*.sqlite
+backend/data/*.sqlite-*
 backend/data/*.sqlite3
+backend/*.log
 .DS_Store
