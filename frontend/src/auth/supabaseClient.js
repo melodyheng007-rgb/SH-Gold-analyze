@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import { createAuthFetch } from './authRequest.js'
 
+const authFetch = createAuthFetch()
+
 const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/\/$/, '')
 const supabasePublishableKey = String(
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
@@ -20,10 +22,34 @@ export const supabase = authConfigured
         flowType: 'pkce',
       },
       global: {
-        fetch: createAuthFetch(),
+        fetch: authFetch,
       },
     })
   : null
+
+export async function requireAuthProvider(provider) {
+  if (!authConfigured) {
+    const error = new Error('ACCOUNT_CONFIGURATION_INVALID')
+    error.code = 'ACCOUNT_CONFIGURATION_INVALID'
+    throw error
+  }
+
+  const response = await authFetch(`${supabaseUrl}/auth/v1/settings`, {
+    headers: { apikey: supabasePublishableKey },
+  })
+  if (!response.ok) {
+    const error = new Error('ACCOUNT_CONFIGURATION_INVALID')
+    error.code = 'ACCOUNT_CONFIGURATION_INVALID'
+    throw error
+  }
+
+  const settings = await response.json()
+  if (!settings?.external?.[provider]) {
+    const error = new Error(`${String(provider).toUpperCase()}_PROVIDER_DISABLED`)
+    error.code = `${String(provider).toUpperCase()}_PROVIDER_DISABLED`
+    throw error
+  }
+}
 
 export function authRedirectUrl(recovery = false) {
   if (typeof window === 'undefined') return ''

@@ -1,6 +1,12 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { setApiAccessToken } from '../services/apiClient.js'
-import { authConfigured, authRedirectUrl, authRequired, supabase } from './supabaseClient.js'
+import {
+  authConfigured,
+  authRedirectUrl,
+  authRequired,
+  requireAuthProvider,
+  supabase,
+} from './supabaseClient.js'
 
 const AuthContext = createContext(null)
 
@@ -77,6 +83,7 @@ export function AuthProvider({ children }) {
     },
     async signInWithGoogle() {
       if (!supabase) throw new Error('Account service is unavailable.')
+      await requireAuthProvider('google')
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { redirectTo: authRedirectUrl() },

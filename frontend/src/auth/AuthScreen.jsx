@@ -21,8 +21,22 @@ const EMPTY_FORM = { fullName: '', email: '', password: '', confirmPassword: '',
 
 function friendlyAuthError(error) {
   const value = String(error?.message || '').toLowerCase()
+  const code = String(error?.code || '').toLowerCase()
   if (error?.code === AUTH_REQUEST_TIMEOUT_CODE || value.includes(AUTH_REQUEST_TIMEOUT_CODE.toLowerCase())) {
     return 'The account service took too long. Check your inbox before trying again.'
+  }
+  if (code === 'google_provider_disabled' || value.includes('unsupported provider')) {
+    return 'Google sign-in is not available yet. Please use email sign-in.'
+  }
+  if (code === 'account_configuration_invalid' || value.includes('invalid api key')) {
+    return 'Account access is not configured correctly. Please contact support.'
+  }
+  if (value.includes('error sending') || value.includes('smtp') || value.includes('confirmation email')) {
+    return 'We could not send the confirmation email. Please try again shortly.'
+  }
+  if (value.includes('signup') && value.includes('disabled')) return 'New account registration is temporarily unavailable.'
+  if (value.includes('password') && (value.includes('weak') || value.includes('characters'))) {
+    return 'Choose a stronger password with at least 8 characters.'
   }
   if (value.includes('invalid login')) return 'Incorrect email or password.'
   if (value.includes('email not confirmed')) return 'Confirm your email before signing in.'
