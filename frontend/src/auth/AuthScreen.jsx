@@ -14,12 +14,16 @@ import {
   X,
 } from 'lucide-react'
 import { normalizeEmail, validateAuthForm } from './authValidation.js'
+import { AUTH_REQUEST_TIMEOUT_CODE } from './authRequest.js'
 import { useAuth } from './AuthProvider.jsx'
 
 const EMPTY_FORM = { fullName: '', email: '', password: '', confirmPassword: '', otp: '' }
 
 function friendlyAuthError(error) {
   const value = String(error?.message || '').toLowerCase()
+  if (error?.code === AUTH_REQUEST_TIMEOUT_CODE || value.includes(AUTH_REQUEST_TIMEOUT_CODE.toLowerCase())) {
+    return 'The account service took too long. Check your inbox before trying again.'
+  }
   if (value.includes('invalid login')) return 'Incorrect email or password.'
   if (value.includes('email not confirmed')) return 'Confirm your email before signing in.'
   if (value.includes('already registered')) return 'An account already exists for this email.'
@@ -176,6 +180,15 @@ export function AuthScreen({ recovery = false, onClose = null }) {
   }
 
   const verificationMode = ['verify-signup', 'verify-recovery'].includes(mode)
+  const busyLabel = mode === 'register'
+    ? 'Creating account...'
+    : mode === 'login'
+      ? 'Signing in...'
+      : verificationMode
+        ? 'Checking code...'
+        : mode === 'forgot'
+          ? 'Sending code...'
+          : 'Updating password...'
   const title = mode === 'register'
     ? 'Create your account'
     : mode === 'forgot'
@@ -284,7 +297,7 @@ export function AuthScreen({ recovery = false, onClose = null }) {
 
           <button className="auth-submit" type="submit" disabled={busy}>
             {busy
-              ? 'Please wait...'
+              ? busyLabel
               : mode === 'login'
                 ? 'Sign in'
                 : mode === 'register'

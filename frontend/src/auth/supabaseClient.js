@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { createAuthFetch } from './authRequest.js'
 
 const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/\/$/, '')
 const supabasePublishableKey = String(
@@ -17,6 +18,9 @@ export const supabase = authConfigured
         persistSession: true,
         detectSessionInUrl: true,
         flowType: 'pkce',
+      },
+      global: {
+        fetch: createAuthFetch(),
       },
     })
   : null
