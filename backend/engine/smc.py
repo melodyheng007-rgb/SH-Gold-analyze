@@ -38,12 +38,14 @@ def detect_order_blocks(df: pd.DataFrame, timeframe: str, max_zones: int = 8) ->
             opposite = lookback[lookback["close"] < lookback["open"]]
             if len(opposite):
                 ob = opposite.iloc[-1]
-                zones.append(Zone("OrderBlock", "bullish", float(min(ob["open"], ob["close"], ob["low"])), float(max(ob["open"], ob["close"], ob["high"])), timeframe, 70, "Last bearish candle before bullish displacement"))
+                ob_time = opposite.index[-1]
+                zones.append(Zone("OrderBlock", "bullish", float(min(ob["open"], ob["close"], ob["low"])), float(max(ob["open"], ob["close"], ob["high"])), timeframe, 70, f"Last bearish candle before bullish displacement at {ob_time}"))
         else:
             opposite = lookback[lookback["close"] > lookback["open"]]
             if len(opposite):
                 ob = opposite.iloc[-1]
-                zones.append(Zone("OrderBlock", "bearish", float(min(ob["open"], ob["close"], ob["low"])), float(max(ob["open"], ob["close"], ob["high"])), timeframe, 70, "Last bullish candle before bearish displacement"))
+                ob_time = opposite.index[-1]
+                zones.append(Zone("OrderBlock", "bearish", float(min(ob["open"], ob["close"], ob["low"])), float(max(ob["open"], ob["close"], ob["high"])), timeframe, 70, f"Last bullish candle before bearish displacement at {ob_time}"))
     return zones[-max_zones:]
 
 

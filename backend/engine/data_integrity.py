@@ -8,11 +8,13 @@ import pandas as pd
 
 from .data_loader import candles_to_records
 from .xauusd_provider import (
+    BINANCE_HISTORY_SOURCE,
     CSV_SOURCE,
     HISTORY_GAP_WARNING,
     ARCHIVED_STALE_SOURCE,
     LIVE_BUILDER_SOURCE,
     LIVE_SOURCE,
+    OANDA_HISTORY_SOURCE,
     PRELOADED_SOURCE,
     RECENT_CSV_SOURCE,
     REAL_CSV_HISTORY_SOURCE,
@@ -28,7 +30,17 @@ from .xauusd_provider import (
 )
 
 LIVE_SOURCES = {LIVE_SOURCE, LIVE_BUILDER_SOURCE}
-REAL_HISTORY_SOURCES = {PRELOADED_SOURCE, CSV_SOURCE, WARMUP_SOURCE, RECENT_CSV_SOURCE, USER_RECENT_CSV_SOURCE, REAL_CSV_HISTORY_SOURCE, TWELVE_DATA_HISTORY_SOURCE}
+REAL_HISTORY_SOURCES = {
+    PRELOADED_SOURCE,
+    CSV_SOURCE,
+    WARMUP_SOURCE,
+    RECENT_CSV_SOURCE,
+    USER_RECENT_CSV_SOURCE,
+    REAL_CSV_HISTORY_SOURCE,
+    TWELVE_DATA_HISTORY_SOURCE,
+    OANDA_HISTORY_SOURCE,
+    BINANCE_HISTORY_SOURCE,
+}
 HISTORY_SOURCES = REAL_HISTORY_SOURCES | TEST_HISTORY_SOURCES
 ALIGNMENT_MAX_AGE_MINUTES = {"1M": 3, "5M": 15, "15M": 45, "1H": 180, "4H": 480, "1D": 4320}
 
@@ -59,6 +71,15 @@ class CandleHistoryAlignmentEngine:
         source_group = self._source_group(source)
         latest_history_close = self._number(history["close"].iloc[-1]) if not history.empty else None
         latest_history_time = self._timestamp(history.index[-1]) if not history.empty else None
+        same_source_live = False
+        if source in {OANDA_HISTORY_SOURCE, BINANCE_HISTORY_SOURCE, TWELVE_DATA_HISTORY_SOURCE}:
+            source_live_candle = self.store.latest_candle_for_sources(tf, {source}) or {}
+            source_live_price = self._number(source_live_candle.get("close"))
+            source_live_time = self._timestamp(source_live_candle.get("timestamp"))
+            if source_live_price is not None and source_live_time is not None:
+                live_price = source_live_price
+                latest_live_time = source_live_time
+                same_source_live = True
 
         if history.empty:
             status = "LIVE_ONLY" if live_price is not None or not live.empty else "NO_HISTORY"
@@ -68,6 +89,8 @@ class CandleHistoryAlignmentEngine:
         price_gap_percent = (price_gap / abs(live_price) * 100) if price_gap is not None and live_price else None
         price_status = self._price_status(price_gap, price_gap_percent)
         time_status = self._time_status(tf, latest_history_time, latest_live_time)
+        if time_status == "ALIGNED" and (same_source_live or self._provider_matches_source(provider_status.get("provider_name"), source)):
+            price_status = "ALIGNED"
 
         if source in TEST_HISTORY_SOURCES:
             aligned = price_status == "ALIGNED" and time_status == "ALIGNED"
@@ -86,6 +109,16 @@ class CandleHistoryAlignmentEngine:
             status = "ALIGNED"
 
         return self._payload(tf, status, live_price, latest_live_time, latest_history_close, latest_history_time, price_gap, price_gap_percent, source, source_group)
+
+    def _provider_matches_source(self, provider_name: Optional[str], source: Optional[str]) -> bool:
+        provider = str(provider_name or "").lower()
+        matches = {
+            OANDA_HISTORY_SOURCE: "oanda",
+            BINANCE_HISTORY_SOURCE: "binance",
+            TWELVE_DATA_HISTORY_SOURCE: "twelve data",
+        }
+        expected = matches.get(source)
+        return bool(expected and expected in provider)
 
     def _payload(
         self,
@@ -135,11 +168,15 @@ class CandleHistoryAlignmentEngine:
         if self._candidate_is_aligned(aligned_test, timeframe, live_price, live_time):
             return aligned_test
         priority = [
+            {OANDA_HISTORY_SOURCE},
+            {BINANCE_HISTORY_SOURCE},
             {TWELVE_DATA_HISTORY_SOURCE},
             {REAL_CSV_HISTORY_SOURCE},
             {USER_RECENT_CSV_SOURCE},
             {RECENT_CSV_SOURCE},
-            {CSV_SOURCE, WARMUP_SOURCE, PRELOADED_SOURCE},
+            {CSV_SOURCE},
+            {WARMUP_SOURCE},
+            {PRELOADED_SOURCE},
             {TEST_HISTORY_LIVE_ANCHORED_SOURCE},
             {TEST_HISTORY_SOURCE},
             LIVE_SOURCES,
@@ -169,11 +206,16 @@ class CandleHistoryAlignmentEngine:
         history_time = self._timestamp(df.index[-1])
         if close is None or history_time is None:
             return False
+        time_aligned = self._time_status(timeframe, history_time, live_time) == "ALIGNED"
+        if timeframe == "1D":
+            # Daily provider candles close at provider-specific session times. Their
+            # close may be far from the current intraday price without being stale.
+            return time_aligned
         price_gap = abs(live_price - close)
         price_gap_percent = price_gap / abs(live_price) * 100 if live_price else 999
         if price_gap > self.ABS_WARN_GAP or price_gap_percent > self.PRICE_WARN_PERCENT:
             return False
-        return self._time_status(timeframe, history_time, live_time) == "ALIGNED"
+        return time_aligned
 
     def _candidate_score(self, df: pd.DataFrame, timeframe: str, live_price: Optional[float], live_time: Optional[pd.Timestamp]) -> float:
         if df.empty:
@@ -198,6 +240,8 @@ class CandleHistoryAlignmentEngine:
         return str(df["source"].iloc[-1])
 
     def _source_group(self, source: Optional[str]) -> str:
+        if source in {OANDA_HISTORY_SOURCE, BINANCE_HISTORY_SOURCE}:
+            return "MATCHED_MARKET_API"
         if source == TWELVE_DATA_HISTORY_SOURCE:
             return "API_HISTORY"
         if source in REAL_HISTORY_SOURCES:
@@ -348,6 +392,84 @@ class DataIntegrityEngine:
     def history_alignment(self, timeframe: str = "15M", limit: int = 1000) -> Dict[str, Any]:
         return self.alignment.check(timeframe, limit)
 
+    def preferred_real_history(self, timeframe: str = "15M", limit: int = 1000) -> pd.DataFrame:
+        tf = normalize_timeframe(timeframe)
+        raw = self.store.get_candles_df(tf, limit)
+        cleaned, _ = self._clean(raw)
+        real_only = self._source_slice(cleaned, REAL_HISTORY_SOURCES)
+        return self.alignment._preferred_history(real_only, tf)
+
+    def timeframe_snapshot(self, timeframe: str, limit: int = 220) -> Dict[str, Any]:
+        tf = normalize_timeframe(timeframe)
+        frame = self.preferred_real_history(tf, limit)
+        if "is_complete" in frame.columns:
+            frame = frame[pd.to_numeric(frame["is_complete"], errors="coerce").fillna(0) == 1]
+        frame = frame.tail(limit)
+        source = str(frame["source"].iloc[-1]) if not frame.empty and "source" in frame.columns else None
+        if len(frame) < 50:
+            return {
+                "timeframe": tf,
+                "status": "WAITING",
+                "source": source,
+                "candle_count": len(frame),
+                "trend": "WAITING",
+                "score": 0,
+            }
+        close = pd.to_numeric(frame["close"], errors="coerce")
+        high = pd.to_numeric(frame["high"], errors="coerce")
+        low = pd.to_numeric(frame["low"], errors="coerce")
+        ema_20 = close.ewm(span=20, adjust=False).mean()
+        ema_50 = close.ewm(span=50, adjust=False).mean()
+        macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+        macd_histogram = macd - macd.ewm(span=9, adjust=False).mean()
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        rsi = (100 - 100 / (1 + gain / loss.mask(loss == 0))).astype(float)
+        rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+        rsi = rsi.mask((gain == 0) & (loss > 0), 0.0)
+        rsi = rsi.fillna(50.0)
+        previous_close = close.shift(1)
+        true_range = pd.concat([
+            (high - low).abs(),
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = true_range.rolling(14, min_periods=1).mean()
+        latest_close = float(close.iloc[-1])
+        latest_ema_20 = float(ema_20.iloc[-1])
+        latest_ema_50 = float(ema_50.iloc[-1])
+        latest_rsi = float(rsi.iloc[-1])
+        latest_macd = float(macd_histogram.iloc[-1])
+        latest_atr = float(atr.iloc[-1])
+        trend_score = 1 if latest_close > latest_ema_20 > latest_ema_50 else -1 if latest_close < latest_ema_20 < latest_ema_50 else 0
+        rsi_score = 1 if latest_rsi >= 55 else -1 if latest_rsi <= 45 else 0
+        macd_score = 1 if latest_macd > 0 else -1 if latest_macd < 0 else 0
+        score = round((trend_score + rsi_score + macd_score) / 3 * 100)
+        trend = "BULLISH" if score >= 34 else "BEARISH" if score <= -34 else "RANGE"
+        latest_time = pd.Timestamp(frame.index[-1])
+        return {
+            "timeframe": tf,
+            "status": "READY",
+            "source": source,
+            "candle_count": len(frame),
+            "last_complete_time": latest_time.isoformat(),
+            "close": round(latest_close, 3),
+            "ema_20": round(latest_ema_20, 3),
+            "ema_50": round(latest_ema_50, 3),
+            "rsi_14": round(latest_rsi, 2),
+            "macd_histogram": round(latest_macd, 6),
+            "atr_14": round(latest_atr, 3),
+            "atr_percent": round(latest_atr / latest_close * 100, 3) if latest_close else None,
+            "trend": trend,
+            "score": score,
+            "components": {
+                "ema_trend": trend_score,
+                "rsi": rsi_score,
+                "macd": macd_score,
+            },
+        }
+
     def overlays(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
         built = self._build(timeframe, limit)
         df = built["frames"]["analysis"]
@@ -375,6 +497,7 @@ class DataIntegrityEngine:
                 "indicator_panels": {
                     "boys_selling": [],
                     "bearishness": [],
+                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
                     "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
                 },
                 "data_integrity": built["data_integrity"],
@@ -388,6 +511,7 @@ class DataIntegrityEngine:
                 "indicator_panels": {
                     "boys_selling": [],
                     "bearishness": [],
+                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
                     "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
                 },
                 "data_integrity": built["data_integrity"],
@@ -401,6 +525,7 @@ class DataIntegrityEngine:
                 "indicator_panels": {
                     "boys_selling": [],
                     "bearishness": [],
+                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
                     "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
                 },
                 "data_integrity": built["data_integrity"],
@@ -414,6 +539,7 @@ class DataIntegrityEngine:
             "indicator_panels": {
                 "boys_selling": boys_selling,
                 "bearishness": bearishness,
+                "indicator_snapshot": self._indicator_snapshot(boys_selling, bearishness),
                 "market_pressure_score": pressure,
             },
             "data_integrity": built["data_integrity"],
@@ -489,7 +615,8 @@ class DataIntegrityEngine:
         raw = self.store.get_candles_df(tf, max(limit * 4, limit))
         cleaned, quality = self._clean(raw)
         test_history = self._source_slice(cleaned, TEST_HISTORY_SOURCES)
-        real_history = self._source_slice(cleaned, REAL_HISTORY_SOURCES)
+        all_real_history = self._source_slice(cleaned, REAL_HISTORY_SOURCES)
+        real_history = self.alignment._preferred_history(all_real_history, tf)
         archived_history = self._source_slice(cleaned, {ARCHIVED_STALE_SOURCE})
         live = self._source_slice(cleaned, LIVE_SOURCES)
         has_real_history = not real_history.empty
@@ -520,7 +647,8 @@ class DataIntegrityEngine:
         test_data_present = any(self.store.has_source(tf, source) for source in TEST_HISTORY_SOURCES)
         recent_csv_present = self.store.has_source(tf, RECENT_CSV_SOURCE) or self.store.has_source(tf, USER_RECENT_CSV_SOURCE) or self.store.has_source(tf, REAL_CSV_HISTORY_SOURCE)
         twelve_data_present = self.store.has_source(tf, TWELVE_DATA_HISTORY_SOURCE)
-        real_recent_history_present = bool(has_real_history and (recent_csv_present or twelve_data_present or self.store.has_source(tf, PRELOADED_SOURCE) or self.store.has_source(tf, WARMUP_SOURCE)))
+        matched_provider_present = self.store.has_source(tf, OANDA_HISTORY_SOURCE) or self.store.has_source(tf, BINANCE_HISTORY_SOURCE)
+        real_recent_history_present = bool(has_real_history and (recent_csv_present or twelve_data_present or matched_provider_present or self.store.has_source(tf, PRELOADED_SOURCE) or self.store.has_source(tf, WARMUP_SOURCE)))
         if cleaned.empty:
             status = "NO_HISTORY"
             warning = "No candle data available. Start live builder or import recent history."
@@ -569,10 +697,20 @@ class DataIntegrityEngine:
             "recent_history_warmup": self.warmup.status(tf),
             "data_status": status,
             "source_labels": self._source_labels(tf),
+            "chart_source": str(real_history["source"].iloc[-1]) if not real_history.empty and "source" in real_history.columns else None,
+            "mixed_chart_sources": bool(not real_history.empty and "source" in real_history.columns and real_history["source"].nunique() > 1),
             "test_data_present": test_data_present,
             "live_anchored_test_present": self.store.has_source(tf, TEST_HISTORY_LIVE_ANCHORED_SOURCE),
             "recent_csv_history_present": recent_csv_present,
             "twelve_data_history_present": twelve_data_present,
+            "matched_provider_history_present": matched_provider_present,
+            "matched_provider_source": (
+                OANDA_HISTORY_SOURCE
+                if self.store.has_source(tf, OANDA_HISTORY_SOURCE)
+                else BINANCE_HISTORY_SOURCE
+                if self.store.has_source(tf, BINANCE_HISTORY_SOURCE)
+                else None
+            ),
             "real_recent_history_present": real_recent_history_present,
             "user_recent_csv_present": self.store.has_source(tf, USER_RECENT_CSV_SOURCE),
             "real_csv_history_present": self.store.has_source(tf, REAL_CSV_HISTORY_SOURCE),
@@ -646,8 +784,7 @@ class DataIntegrityEngine:
         abnormal_count = int(abnormal_mask.sum())
         if abnormal_count:
             work["is_abnormal"] = abnormal_mask
-            warnings.append(f"{abnormal_count} abnormal candles flagged.")
-            work = work[~abnormal_mask]
+            warnings.append(f"{abnormal_count} high-volatility candles flagged but retained after valid OHLC checks.")
         return work, {
             "invalid_removed": invalid_removed,
             "duplicates_removed": duplicates,
@@ -801,38 +938,124 @@ class DataIntegrityEngine:
         return {"data_mode": "NO_DATA", "label": "NO DATA", "description": "No live price or candle history"}
 
     def _indicator_data(self, df: pd.DataFrame) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], Dict[str, float]]:
-        if df.empty:
+        if df.empty or len(df) < 35:
             return [], [], {"bullish": 0, "bearish": 0, "neutral": 100}
-        boys_selling: list[Dict[str, Any]] = []
-        bearishness: list[Dict[str, Any]] = []
-        bullish_total = 0.0
-        bearish_total = 0.0
-        frame = df.tail(120)
-        for time, row in frame.iterrows():
+        frame = df.tail(180).copy()
+        close = pd.to_numeric(frame["close"], errors="coerce")
+        ema_12 = close.ewm(span=12, adjust=False, min_periods=12).mean()
+        ema_26 = close.ewm(span=26, adjust=False, min_periods=26).mean()
+        macd = ema_12 - ema_26
+        macd_signal = macd.ewm(span=9, adjust=False, min_periods=9).mean()
+        macd_histogram = macd - macd_signal
+
+        delta = close.diff()
+        average_gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        average_loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        relative_strength = average_gain / average_loss.mask(average_loss == 0)
+        rsi = (100 - (100 / (1 + relative_strength))).astype(float)
+        rsi = rsi.mask((average_loss == 0) & (average_gain > 0), 100.0)
+        rsi = rsi.mask((average_gain == 0) & (average_loss > 0), 0.0)
+        rsi = rsi.fillna(50.0)
+
+        macd_records: list[Dict[str, Any]] = []
+        rsi_records: list[Dict[str, Any]] = []
+        for time in frame.index:
             timestamp = pd.Timestamp(time)
             if timestamp.tzinfo is not None:
                 timestamp = timestamp.tz_convert("UTC").tz_localize(None)
-            rng = max(float(row["high"] - row["low"]), 0.001)
-            body = float(row["close"] - row["open"])
-            momentum = body / rng
-            value = momentum * 5
-            bullish_total += max(value, 0)
-            bearish_total += abs(min(value, 0))
-            boys_selling.append({
-                "time": int(timestamp.timestamp()),
-                "value": round(value, 3),
-                "color": "green" if value >= 0 else "red",
-            })
-            sell_pressure = max(float(row["open"] - row["close"]), 0.0) / rng
-            bearishness.append({"time": int(timestamp.timestamp()), "value": round(-80 - sell_pressure * 260, 3)})
-        total = bullish_total + bearish_total
-        if total <= 0:
-            pressure = {"bullish": 0, "bearish": 0, "neutral": 100}
+            histogram_value = macd_histogram.loc[time]
+            rsi_value = rsi.loc[time]
+            if pd.notna(histogram_value):
+                value = float(histogram_value)
+                macd_records.append({
+                    "time": int(timestamp.timestamp()),
+                    "value": round(value, 6),
+                    "color": "green" if value >= 0 else "red",
+                })
+            if pd.notna(rsi_value):
+                centered_rsi = float(rsi_value) - 50
+                rsi_records.append({
+                    "time": int(timestamp.timestamp()),
+                    "value": round(centered_rsi, 4),
+                    "raw_value": round(float(rsi_value), 4),
+                    "color": "green" if centered_rsi >= 0 else "blue",
+                })
+
+        recent_macd = [float(item["value"]) for item in macd_records[-20:]]
+        latest_rsi = float(rsi_records[-1]["raw_value"]) if rsi_records else 50.0
+        positive_macd = sum(1 for value in recent_macd if value > 0)
+        negative_macd = sum(1 for value in recent_macd if value < 0)
+        sample_count = max(len(recent_macd), 1)
+        macd_bullish = positive_macd / sample_count * 50
+        macd_bearish = negative_macd / sample_count * 50
+        rsi_bullish = max(0.0, min(50.0, latest_rsi - 50.0))
+        rsi_bearish = max(0.0, min(50.0, 50.0 - latest_rsi))
+        bullish = macd_bullish + rsi_bullish
+        bearish = macd_bearish + rsi_bearish
+        total = bullish + bearish
+        if total > 100:
+            bullish = bullish / total * 100
+            bearish = bearish / total * 100
+        pressure = {
+            "bullish": round(bullish, 2),
+            "bearish": round(bearish, 2),
+            "neutral": round(max(0.0, 100.0 - bullish - bearish), 2),
+        }
+        return macd_records, rsi_records, pressure
+
+    @staticmethod
+    def _indicator_snapshot(
+        macd_records: list[Dict[str, Any]],
+        rsi_records: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not macd_records or not rsi_records:
+            return {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"}
+
+        latest_macd = float(macd_records[-1]["value"])
+        previous_macd = float(macd_records[-2]["value"]) if len(macd_records) > 1 else latest_macd
+        latest_rsi = float(rsi_records[-1].get("raw_value", 50.0))
+        previous_rsi = float(rsi_records[-2].get("raw_value", latest_rsi)) if len(rsi_records) > 1 else latest_rsi
+        recent_peak = max((abs(float(item["value"])) for item in macd_records[-30:]), default=0.0)
+        macd_strength = min(100.0, abs(latest_macd) / recent_peak * 100.0) if recent_peak else 0.0
+
+        if latest_rsi >= 70:
+            rsi_zone = "OVERBOUGHT"
+        elif latest_rsi <= 30:
+            rsi_zone = "OVERSOLD"
+        elif latest_rsi >= 55:
+            rsi_zone = "BULLISH"
+        elif latest_rsi <= 45:
+            rsi_zone = "BEARISH"
         else:
-            bullish = bullish_total / total * 100
-            bearish = bearish_total / total * 100
-            pressure = {"bullish": round(bullish, 2), "bearish": round(bearish, 2), "neutral": round(max(0, 100 - bullish - bearish), 2)}
-        return boys_selling, bearishness, pressure
+            rsi_zone = "NEUTRAL"
+
+        if latest_macd > 0 and latest_rsi >= 52:
+            confluence = "ALIGNED_BULLISH"
+        elif latest_macd < 0 and latest_rsi <= 48:
+            confluence = "ALIGNED_BEARISH"
+        else:
+            confluence = "MIXED"
+
+        return {
+            "status": "READY",
+            "source": "CLOSED_PROVIDER_CANDLES",
+            "latest_time": max(int(macd_records[-1]["time"]), int(rsi_records[-1]["time"])),
+            "macd": {
+                "histogram": round(latest_macd, 6),
+                "previous": round(previous_macd, 6),
+                "bias": "BULLISH" if latest_macd > 0 else "BEARISH" if latest_macd < 0 else "NEUTRAL",
+                "momentum": "RISING" if latest_macd > previous_macd else "FALLING" if latest_macd < previous_macd else "FLAT",
+                "strength": round(macd_strength, 1),
+            },
+            "rsi": {
+                "value": round(latest_rsi, 2),
+                "previous": round(previous_rsi, 2),
+                "zone": rsi_zone,
+                "momentum": "RISING" if latest_rsi > previous_rsi else "FALLING" if latest_rsi < previous_rsi else "FLAT",
+            },
+            "confluence": confluence,
+            "decision_use": "CONTEXT_ONLY",
+        }
 
     def _load_csv_candles(self, csv_path: str) -> list[Dict[str, Any]]:
         path = Path(csv_path)

@@ -176,7 +176,11 @@ export async function getDebugData() {
 }
 
 export async function getProviderStatus() {
-  return await apiRequest('/api/xauusd/provider-status', { timeoutMs: 3500 })
+  return await apiRequest('/api/xauusd/provider-status', { timeoutMs: 12000 })
+}
+
+export async function getProviderCredentials() {
+  return await apiRequest('/api/xauusd/provider-credentials', { timeoutMs: 5000 })
 }
 
 export async function saveProviderSettings(settings) {
@@ -184,6 +188,15 @@ export async function saveProviderSettings(settings) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
+  })
+}
+
+export async function verifyOandaFeed(settings) {
+  return await apiRequest('/api/xauusd/verify-oanda', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+    timeoutMs: 120000,
   })
 }
 
@@ -219,8 +232,63 @@ export async function analyzePro() {
   return await apiRequest('/api/xauusd/analyze-pro', { method: 'POST' })
 }
 
-export async function analyzeV4() {
-  return await apiRequest('/api/xauusd/analyze-v4', { method: 'POST' })
+export async function analyzeV4(symbol = 'XAUUSD', timeframe = '15M', tradeStyle = 'SCALPING') {
+  return await apiRequest('/api/market/analyze-v4', { method: 'POST', query: { symbol, timeframe, trade_style: tradeStyle }, timeoutMs: 70000 })
+}
+
+export async function getAnalysisHistory(symbol = 'XAUUSD', limit = 12) {
+  return await apiRequest('/api/market/analysis-history', { query: { symbol, limit }, timeoutMs: 10000 })
+}
+
+export async function getDiamondHistory(symbol = 'XAUUSD', limit = 30) {
+  return await apiRequest('/api/market/diamond-history', { query: { symbol, limit }, timeoutMs: 15000 })
+}
+
+export async function getDiamondValidation(symbol = 'XAUUSD', timeframe = '15M') {
+  return await apiRequest('/api/market/diamond-validation', { query: { symbol, timeframe }, timeoutMs: 15000 })
+}
+
+export async function getStrategyGovernance(symbol = 'XAUUSD', timeframe = '15M') {
+  return await apiRequest('/api/market/strategy-governance', { query: { symbol, timeframe }, timeoutMs: 15000 })
+}
+
+export async function getMarketAlerts(symbol = 'XAUUSD', limit = 20, unreadOnly = false) {
+  return await apiRequest('/api/market/alerts', {
+    query: { symbol, limit, unread_only: unreadOnly },
+    timeoutMs: 10000,
+  })
+}
+
+export async function acknowledgeMarketAlert(alertId) {
+  return await apiRequest(`/api/market/alerts/${alertId}/acknowledge`, { method: 'POST', timeoutMs: 10000 })
+}
+
+export async function runDiamondValidation(symbol = 'XAUUSD', timeframe = '15M', options = {}) {
+  return await apiRequest('/api/market/diamond-validation/run', {
+    method: 'POST',
+    body: JSON.stringify({
+      symbol,
+      timeframe,
+      lookback_bars: options.lookbackBars || 1000,
+      horizon_bars: options.horizonBars || null,
+      refresh_market: options.refreshMarket !== false,
+      force: options.force === true,
+    }),
+    headers: { 'Content-Type': 'application/json' },
+    timeoutMs: 120000,
+  })
+}
+
+export async function getTrackedSetups(symbol = 'XAUUSD', limit = 20) {
+  return await apiRequest('/api/market/setups', { query: { symbol, limit }, timeoutMs: 10000 })
+}
+
+export async function refreshTrackedSetups(symbol = 'XAUUSD') {
+  return await apiRequest('/api/market/setups/refresh', { method: 'POST', query: { symbol }, timeoutMs: 10000 })
+}
+
+export async function cancelTrackedSetup(setupId) {
+  return await apiRequest(`/api/market/setups/${setupId}/cancel`, { method: 'POST', timeoutMs: 10000 })
 }
 
 export async function getProAnalysis(mode = 'balanced') {
@@ -231,8 +299,32 @@ export async function getProAnalysisV4(mode = 'balanced') {
   return await apiRequest('/api/xauusd/pro-analysis-v4', { query: { mode } })
 }
 
-export async function getAnalysisExplanation(mode = 'balanced') {
-  return await apiRequest('/api/xauusd/analysis-explanation', { query: { mode } })
+export async function getAnalysisExplanation(symbol = 'XAUUSD', mode = 'balanced') {
+  return await apiRequest('/api/market/analysis-explanation', { query: { symbol, mode }, timeoutMs: 45000 })
+}
+
+export async function getMarketOverview(mode = 'balanced') {
+  return await apiRequest('/api/market/overview', { query: { mode }, timeoutMs: 15000 })
+}
+
+export async function getMarketNewsCalendar(symbol = 'XAUUSD', refresh = false) {
+  return await apiRequest('/api/market/news-calendar', { query: { symbol, refresh }, timeoutMs: 15000 })
+}
+
+export async function getMarketSignalView(symbol = 'XAUUSD', timeframe = '15M', limit = 500, tradeStyle = 'SCALPING', refreshMarket = true) {
+  return await apiRequest('/api/market/signal-view', { query: { symbol, timeframe, limit, trade_style: tradeStyle, refresh_market: refreshMarket }, timeoutMs: 45000 })
+}
+
+export async function getMarketChartSnapshot(symbol = 'XAUUSD', timeframe = '15M', limit = 500) {
+  return await apiRequest('/api/market/chart-snapshot', { query: { symbol, timeframe, limit }, timeoutMs: 5000 })
+}
+
+export async function getMarketChartLive(symbol = 'XAUUSD', timeframe = '15M', limit = 500, tradeStyle = 'SCALPING') {
+  return await apiRequest('/api/market/chart-live', { query: { symbol, timeframe, limit, trade_style: tradeStyle }, timeoutMs: 25000 })
+}
+
+export async function getMarketMtfSnapshot(symbol = 'XAUUSD') {
+  return await apiRequest('/api/market/mtf-snapshot', { query: { symbol }, timeoutMs: 15000 })
 }
 
 export async function getAnalysisCache() {

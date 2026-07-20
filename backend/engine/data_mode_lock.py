@@ -27,9 +27,10 @@ class DataModeLockService:
         "BACKEND_OFFLINE_MODE",
     }
 
-    def __init__(self, store: SQLiteCandleStore, settings: ProviderSettings):
+    def __init__(self, store: SQLiteCandleStore, settings: ProviderSettings, symbol: str = "XAUUSD"):
         self.store = store
         self.settings = settings
+        self.symbol = str(symbol or "XAUUSD").upper()
 
     def locked_mode(
         self,
@@ -70,7 +71,7 @@ class DataModeLockService:
             reason = "Real recent candle history exists, latest live price exists, and no critical gap is active."
         elif (has_real or has_any_candles) and active_gap:
             mode = "GAP_WARNING_MODE"
-            reason = "Historical candles and latest live XAUUSD price are not aligned."
+            reason = f"Historical candles and latest live {self.symbol} price are not aligned."
         elif has_test:
             mode = "TEST_MODE"
             reason = "Only TEST_HISTORY candles are available. Test data is not real market history."
@@ -99,7 +100,7 @@ class DataModeLockService:
             analysis_state = "Waiting for Data"
 
         return {
-            "symbol": "XAUUSD",
+            "symbol": self.symbol,
             "locked_mode": mode,
             "mode": mode,
             "data_mode": mode,

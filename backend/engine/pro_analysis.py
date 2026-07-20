@@ -9,7 +9,9 @@ from .liquidity import crt_range, detect_liquidity
 from .smc import detect_fvg, detect_order_blocks, premium_discount_zone, select_best_zone
 from .structure import detect_structure
 from .xauusd_provider import (
+    BINANCE_HISTORY_SOURCE,
     MIN_ANALYSIS_CANDLES,
+    OANDA_HISTORY_SOURCE,
     REAL_CSV_HISTORY_SOURCE,
     REAL_RECENT_SOURCES,
     RECENT_CSV_SOURCE,
@@ -25,9 +27,10 @@ from .xauusd_provider import (
 class ProAnalysisEngineV3:
     REQUIRED_TIMEFRAMES = ["1D", "4H", "1H", "15M", "5M"]
 
-    def __init__(self, store: SQLiteCandleStore, cache: Any = None):
+    def __init__(self, store: SQLiteCandleStore, cache: Any = None, symbol: str = "XAUUSD"):
         self.store = store
         self.cache = cache
+        self.symbol = str(symbol or "XAUUSD").upper()
         self._active_source_label = "AUTO"
         self._active_sources: set[str] | None = None
 
@@ -41,7 +44,7 @@ class ProAnalysisEngineV3:
         if locked_mode == "BACKEND_OFFLINE_MODE":
             return self._blocked("Backend Offline", locked_mode, data_mode, counts, "Backend is offline. Analysis disabled.")
         if locked_mode == "NO_DATA_MODE":
-            return self._blocked("Waiting for Data", locked_mode, data_mode, counts, "No XAUUSD candle history or live price is available.")
+            return self._blocked("Waiting for Data", locked_mode, data_mode, counts, f"No {self.symbol} candle history or live price is available.")
         if locked_mode == "LIVE_ONLY_MODE":
             return self._blocked("Live Only", locked_mode, data_mode, counts, "Live price alone cannot produce a professional MTF setup.", current_price)
         if locked_mode == "GAP_WARNING_MODE":
@@ -56,40 +59,54 @@ class ProAnalysisEngineV3:
         poi = self._cached("poi", "15M", lambda: self._poi(frames, htf, crt, current_price))
         confirmation = self._cached("confirmation", "5M", lambda: self._confirmation(frames, htf, poi, current_price))
         score = self._score(locked_mode, data_mode, htf, crt, liquidity, poi, confirmation)
-        decision = self._decision(locked_mode, htf, liquidity, poi, confirmation, score)
+        gate_decision = self._decision(locked_mode, htf, liquidity, poi, confirmation, score)
+        trade_plan = self._best_available_trade_plan(
+            frames,
+            locked_mode,
+            current_price,
+            htf,
+            liquidity,
+            crt,
+            poi,
+            confirmation,
+            score,
+        )
+        decision = self._presented_decision(gate_decision, trade_plan, locked_mode)
 
-        direction = "BUY" if htf["bias"] == "Bullish" else "SELL" if htf["bias"] == "Bearish" else "WAIT"
+        direction = trade_plan.get("direction") or ("BUY" if htf["bias"] == "Bullish" else "SELL" if htf["bias"] == "Bearish" else "WAIT")
         best_poi = poi.get("best_poi") or {}
         signal = {
             "status": decision,
             "score": score["score"],
             "score_result": score["score_result"],
             "direction": direction,
-            "setup_type": best_poi.get("type") or "None",
-            "entry_zone": confirmation.get("entry_zone") or best_poi or None,
-            "invalidation_level": confirmation.get("invalidation_level") or poi.get("invalidation_level"),
-            "target_levels": poi.get("target_levels", []),
+            "setup_type": trade_plan.get("setup_type") or best_poi.get("type") or "None",
+            "order_type": trade_plan.get("order_type"),
+            "setup_status": trade_plan.get("status"),
+            "entry_zone": trade_plan.get("entry_zone") if trade_plan else confirmation.get("entry_zone") or best_poi or None,
+            "invalidation_level": trade_plan.get("stop_loss") if trade_plan else confirmation.get("invalidation_level") or poi.get("invalidation_level"),
+            "target_levels": trade_plan.get("take_profit_levels") if trade_plan else poi.get("target_levels", []),
             "confirmation_status": "Confirmed" if confirmation.get("confirmation_ready") else "Waiting",
-            "final_action": self._final_action(decision, locked_mode),
+            "final_action": trade_plan.get("action") or self._final_action(decision, locked_mode),
             "reasons": score["positive_reasons"],
             "warnings": score["penalty_reasons"] + data_mode.get("warnings", []),
         }
-        risk_model = self._risk_model(signal, current_price)
+        risk_model = trade_plan.get("risk_model") or self._risk_model(signal, current_price)
         signal["risk_model"] = risk_model
         signal["trade_plan_valid"] = risk_model["status"] == "VALID"
-        signal["execution_allowed"] = locked_mode == "REAL_MODE" and "Setup" in decision and risk_model["status"] == "VALID"
-        if risk_model["status"] != "VALID" and "Setup" in decision:
-            decision = "No Trade"
-            signal["status"] = decision
-            signal["final_action"] = "Wait. Risk model did not validate the setup."
+        signal["execution_allowed"] = bool(
+            locked_mode == "REAL_MODE"
+            and trade_plan.get("status") == "ACTIONABLE"
+            and risk_model["status"] == "VALID"
+        )
+        if risk_model["status"] != "VALID":
             signal["warnings"] = signal.get("warnings", []) + risk_model["warnings"]
-            signal["execution_allowed"] = False
         workflow = self._workflow(data_integrity, htf, liquidity, crt, poi, confirmation, score, decision)
         if locked_mode == "TEST_MODE":
             signal["test_data_warning"] = "TEST MODE analysis is for validation only. It is not a real market signal."
 
         return {
-            "symbol": "XAUUSD",
+            "symbol": self.symbol,
             "version": "1.7.2",
             "engine_core_version": "V3",
             "engine_name": "Pro Analysis Engine V3",
@@ -108,6 +125,7 @@ class ProAnalysisEngineV3:
             "bias": htf["bias"],
             "market_state": decision,
             "final_decision": decision,
+            "gate_decision": gate_decision,
             "data_integrity_check": data_integrity,
             "htf_bias": htf,
             "liquidity_map": liquidity,
@@ -116,6 +134,7 @@ class ProAnalysisEngineV3:
             "confirmation_engine": confirmation,
             "score_engine": score,
             "risk_model": risk_model,
+            "trade_plan": trade_plan,
             "signal": signal,
             "workflow": workflow,
             "cache_status": self.cache.status() if self.cache else {},
@@ -130,14 +149,20 @@ class ProAnalysisEngineV3:
 
     def _frames(self, mode: str, data_mode: Optional[Dict[str, Any]] = None) -> Dict[str, pd.DataFrame]:
         limits = {
-            "fast": {"5M": 180, "15M": 160, "1H": 140, "4H": 80, "1D": 45},
+            "fast": {"5M": 180, "15M": 160, "1H": 140, "4H": 80, "1D": 65},
             "balanced": {"5M": 700, "15M": 500, "1H": 320, "4H": 180, "1D": 90},
             "deep": {"5M": 1200, "15M": 900, "1H": 600, "4H": 320, "1D": 220},
         }.get(mode, {"5M": 700, "15M": 500, "1H": 320, "4H": 180, "1D": 90})
         sources, label = self._analysis_sources(data_mode or {})
         self._active_sources = sources
         self._active_source_label = label
-        return {tf: self.store.get_candles_df(tf, limits[tf], sources=sources) for tf in self.REQUIRED_TIMEFRAMES}
+        frames: Dict[str, pd.DataFrame] = {}
+        for tf in self.REQUIRED_TIMEFRAMES:
+            frame = self.store.get_candles_df(tf, limits[tf] + 5, sources=sources)
+            if "is_complete" in frame.columns:
+                frame = frame[pd.to_numeric(frame["is_complete"], errors="coerce").fillna(0) == 1]
+            frames[tf] = frame.tail(limits[tf])
+        return frames
 
     def _analysis_sources(self, data_mode: Dict[str, Any]) -> tuple[set[str] | None, str]:
         locked_mode = data_mode.get("locked_mode") or data_mode.get("data_mode")
@@ -146,6 +171,8 @@ class ProAnalysisEngineV3:
             return set(TEST_HISTORY_SOURCES), "TEST_HISTORY_ONLY"
         if locked_mode == "REAL_MODE":
             priority = [
+                (OANDA_HISTORY_SOURCE, {OANDA_HISTORY_SOURCE}),
+                (BINANCE_HISTORY_SOURCE, {BINANCE_HISTORY_SOURCE}),
                 (TWELVE_DATA_HISTORY_SOURCE, {TWELVE_DATA_HISTORY_SOURCE}),
                 (REAL_CSV_HISTORY_SOURCE, {REAL_CSV_HISTORY_SOURCE}),
                 (USER_RECENT_CSV_SOURCE, {USER_RECENT_CSV_SOURCE}),
@@ -185,8 +212,12 @@ class ProAnalysisEngineV3:
         return round(float(provider_price), 3) if provider_price is not None else None
 
     def _cached(self, name: str, dependency_tf: str, builder: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
-        dependency = self.store.latest_timestamp_for_sources(dependency_tf, self._active_sources) if self._active_sources else self.store.latest_any_timestamp(dependency_tf)
-        key = f"pro:v3.1:{self._active_source_label}:{name}:{dependency_tf}"
+        dependency = (
+            self.store.latest_timestamp_for_sources(dependency_tf, self._active_sources, completed_only=True)
+            if self._active_sources
+            else self.store.latest_any_timestamp(dependency_tf, completed_only=True)
+        )
+        key = f"pro:v3.2:{self.symbol}:{self._active_source_label}:{name}:{dependency_tf}"
         if self.cache:
             cached = self.cache.get(key, dependency)
             if cached:
@@ -371,8 +402,7 @@ class ProAnalysisEngineV3:
             score += 20
             positives.append("HTF bias aligned +20")
         else:
-            score -= 25
-            penalties.append("HTF conflict -25")
+            penalties.append("HTF bias is not aligned")
         correct_pd = (
             htf["bias"] == "Bullish" and crt["premium_discount_status"] == "Discount"
         ) or (
@@ -385,23 +415,20 @@ class ProAnalysisEngineV3:
             score += 20
             positives.append("Liquidity sweep +20")
         else:
-            score -= 20
-            penalties.append("No liquidity sweep -20")
+            penalties.append("Liquidity sweep pending")
         if poi.get("best_poi") and poi.get("best_poi", {}).get("type") in {"FVG", "OrderBlock", "OTE"}:
             score += 15
             positives.append("Valid 15M POI +15")
         else:
-            score -= 15
-            penalties.append("No POI -15")
+            penalties.append("15M POI pending")
         if poi.get("ote_zone") and poi.get("premium_discount_alignment"):
             score += 10
             positives.append("OTE confluence +10")
-        if confirmation.get("bos") or confirmation.get("choch"):
+        if confirmation.get("confirmation_ready"):
             score += 20
             positives.append("5M BOS/CHOCH confirmation +20")
         else:
-            score -= 20
-            penalties.append("No confirmation -20")
+            penalties.append("5M confirmation pending")
         if locked_mode == "TEST_MODE":
             penalties.append("TEST MODE: not a real signal")
         if locked_mode == "LIVE_ONLY_MODE":
@@ -420,6 +447,186 @@ class ProAnalysisEngineV3:
             "positive_reasons": positives,
             "penalty_reasons": penalties,
         }
+
+    def _best_available_trade_plan(
+        self,
+        frames: Dict[str, pd.DataFrame],
+        locked_mode: str,
+        current_price: Optional[float],
+        htf: Dict[str, Any],
+        liquidity: Dict[str, Any],
+        crt: Dict[str, Any],
+        poi: Dict[str, Any],
+        confirmation: Dict[str, Any],
+        score: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if current_price is None or locked_mode in {"BACKEND_OFFLINE_MODE", "NO_DATA_MODE", "GAP_WARNING_MODE", "LIVE_ONLY_MODE"}:
+            return {}
+
+        bias = htf.get("bias")
+        inferred_direction = bias not in {"Bullish", "Bearish"}
+        direction = "BUY" if bias == "Bullish" else "SELL" if bias == "Bearish" else (
+            "SELL" if float(current_price) >= float(crt.get("equilibrium", current_price)) else "BUY"
+        )
+        direction_key = direction.lower().replace("buy", "bullish").replace("sell", "bearish")
+        atr_series = atr(frames["15M"], 14)
+        atr_value = float(atr_series.iloc[-1]) if len(atr_series) and pd.notna(atr_series.iloc[-1]) else 0.0
+        atr_value = max(atr_value, float(current_price) * 0.0005, 0.5)
+
+        missing_conditions: list[str] = []
+        if inferred_direction:
+            missing_conditions.append("Aligned 1D/4H bias")
+        if not liquidity.get("liquidity_sweep"):
+            missing_conditions.append("Mapped liquidity sweep")
+        if not poi.get("best_poi"):
+            missing_conditions.append("15M POI")
+        if not poi.get("premium_discount_alignment"):
+            missing_conditions.append("Premium/discount alignment")
+        if not confirmation.get("confirmation_ready"):
+            missing_conditions.append("5M BOS/CHOCH confirmation")
+        if score.get("score", 0) < 75:
+            missing_conditions.append("Setup score of at least 75")
+
+        base_actionable = not missing_conditions and locked_mode == "REAL_MODE"
+        order_type = "MARKET" if base_actionable else "LIMIT"
+        zone_low: float
+        zone_high: float
+        setup_type = "Confirmed Market" if order_type == "MARKET" else "ATR Pullback"
+        zone_source = "Current confirmed price" if order_type == "MARKET" else "Projected pullback"
+
+        if order_type == "MARKET":
+            half_width = max(atr_value * 0.05, 0.1)
+            zone_low = float(current_price) - half_width
+            zone_high = float(current_price) + half_width
+        else:
+            candidates = [] if inferred_direction else [
+                poi.get("best_poi"),
+                poi.get("ote_zone"),
+                *list(poi.get("fair_value_gaps") or []),
+                *list(poi.get("order_blocks") or []),
+            ]
+            usable: list[tuple[float, Dict[str, Any]]] = []
+            min_gap = max(atr_value * 0.15, 0.2)
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                low = candidate.get("low")
+                high = candidate.get("high")
+                candidate_direction = str(candidate.get("direction") or "").lower()
+                if low is None or high is None or (candidate_direction and candidate_direction != direction_key):
+                    continue
+                low_value, high_value = sorted((float(low), float(high)))
+                midpoint = (low_value + high_value) / 2
+                directionally_valid = (
+                    direction == "SELL" and midpoint >= float(current_price) + min_gap
+                ) or (
+                    direction == "BUY" and midpoint <= float(current_price) - min_gap
+                )
+                if directionally_valid:
+                    usable.append((abs(midpoint - float(current_price)), {**candidate, "low": low_value, "high": high_value}))
+
+            if usable:
+                selected = min(usable, key=lambda item: item[0])[1]
+                missing_conditions = [condition for condition in missing_conditions if condition != "15M POI"]
+                zone_low = float(selected["low"])
+                zone_high = float(selected["high"])
+                setup_type = str(selected.get("type") or "POI Pullback")
+                zone_source = str(selected.get("reason") or "Nearest directional 15M POI")
+            else:
+                return {
+                    "status": "NO_VALID_SETUP",
+                    "actionable": False,
+                    "label": "No Valid Setup",
+                    "direction": "WAIT",
+                    "market_direction": "UNCONFIRMED" if inferred_direction else direction,
+                    "order_type": "NONE",
+                    "position_type": "NONE",
+                    "setup_type": "None",
+                    "entry_zone": None,
+                    "entry_price": None,
+                    "stop_loss": None,
+                    "take_profit_levels": [],
+                    "risk_reward": None,
+                    "risk_model": {
+                        "status": "NO_SETUP",
+                        "rr": None,
+                        "entry": None,
+                        "risk": None,
+                        "reward": None,
+                        "warnings": ["No directional FVG, Order Block, or OTE entry zone is currently valid."],
+                    },
+                    "confidence": int(score.get("score", 0)),
+                    "quality": "NO_SETUP",
+                    "missing_conditions": list(dict.fromkeys(missing_conditions)),
+                    "trigger": missing_conditions[0] if missing_conditions else "A new directional 15M POI",
+                    "zone_source": (
+                        "HTF bias is not aligned, so detected zones are not eligible as trade entries."
+                        if inferred_direction
+                        else "No real directional FVG, Order Block, or OTE zone ahead of price."
+                    ),
+                    "stop_model": "NONE",
+                    "target_model": "NONE",
+                    "action": "No order. Wait for a real directional POI to form; no synthetic entry was generated.",
+                }
+
+        entry_price = (zone_low + zone_high) / 2
+        stop_buffer = max(atr_value * 0.25, 0.5)
+        stop_loss = zone_low - stop_buffer if direction == "BUY" else zone_high + stop_buffer
+        risk = abs(entry_price - stop_loss)
+        multiplier = 1 if direction == "BUY" else -1
+        targets = [
+            entry_price + multiplier * risk * 1.5,
+            entry_price + multiplier * risk * 2.0,
+            entry_price + multiplier * risk * 3.0,
+        ]
+        entry_zone = {"low": round(zone_low, 3), "high": round(zone_high, 3)}
+        rounded_targets = [round(target, 3) for target in targets]
+        rounded_stop = round(stop_loss, 3)
+        risk_model = self._risk_model(
+            {
+                "direction": direction,
+                "entry_zone": entry_zone,
+                "invalidation_level": rounded_stop,
+                "target_levels": rounded_targets,
+            },
+            current_price,
+        )
+        actionable = base_actionable and risk_model.get("status") == "VALID"
+        status = "ACTIONABLE" if actionable else "CANDIDATE"
+        label = f"{'Actionable' if actionable else 'Candidate'} {direction.title()} {order_type.title()} Setup"
+        action = (
+            f"Validated {direction} market setup at {round(entry_price, 3)}."
+            if actionable
+            else f"Evidence-backed {direction} limit candidate at {round(entry_price, 3)}; not active until {missing_conditions[0].lower() if missing_conditions else 'risk validation'}."
+        )
+        return {
+            "status": status,
+            "actionable": actionable,
+            "label": label,
+            "direction": direction,
+            "order_type": order_type,
+            "position_type": "POSITION" if order_type == "MARKET" else "LIMIT",
+            "setup_type": setup_type,
+            "entry_zone": entry_zone,
+            "entry_price": round(entry_price, 3),
+            "stop_loss": rounded_stop,
+            "take_profit_levels": rounded_targets,
+            "risk_reward": risk_model.get("rr"),
+            "risk_model": risk_model,
+            "confidence": int(score.get("score", 0)),
+            "quality": "HIGH" if score.get("score", 0) >= 85 else "VALID" if score.get("score", 0) >= 75 else "DEVELOPING",
+            "missing_conditions": list(dict.fromkeys(missing_conditions)),
+            "trigger": missing_conditions[0] if missing_conditions else "Entry zone remains valid",
+            "zone_source": zone_source,
+            "stop_model": "POI boundary plus 0.25 ATR buffer",
+            "target_model": "1.5R / 2R / 3R from the evidence-backed entry",
+            "action": action,
+        }
+
+    def _presented_decision(self, gate_decision: str, trade_plan: Dict[str, Any], locked_mode: str) -> str:
+        if locked_mode != "REAL_MODE" or not trade_plan:
+            return gate_decision
+        return str(trade_plan.get("label") or gate_decision)
 
     def _decision(self, locked_mode: str, htf: Dict[str, Any], liquidity: Dict[str, Any], poi: Dict[str, Any], confirmation: Dict[str, Any], score: Dict[str, Any]) -> str:
         if locked_mode == "TEST_MODE":
@@ -454,7 +661,7 @@ class ProAnalysisEngineV3:
             self._stage("POI Engine", "VALID" if poi.get("best_poi") else "WAITING", poi["confidence"], poi["reason"], "15M", [poi["best_poi"]] if poi.get("best_poi") else []),
             self._stage("Confirmation Engine", "VALID" if confirmation.get("confirmation_ready") else "WAITING", confirmation["confidence"], confirmation["reason"], "5M", []),
             self._stage("Score Engine", "VALID" if score["score"] >= 75 else "WEAK", score["score"], score["score_result"], "All", []),
-            self._stage("Final Decision Engine", "VALID" if "Setup" in decision else "WAITING" if decision.startswith("Waiting") else "INFO", score["score"], decision, "All", []),
+            self._stage("Final Decision Engine", "VALID" if decision.startswith("Actionable") else "WAITING" if decision.startswith(("Waiting", "Candidate", "No Valid")) else "INFO", score["score"], decision, "All", []),
         ]
 
     def _blocked(self, decision: str, locked_mode: str, data_mode: Dict[str, Any], counts: Dict[str, int], reason: str, current_price: Optional[float] = None, missing: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -463,7 +670,7 @@ class ProAnalysisEngineV3:
             self._stage("Final Decision Engine", "WAITING", 0, decision, "All", []),
         ]
         return {
-            "symbol": "XAUUSD",
+            "symbol": self.symbol,
             "version": "1.7.2",
             "engine_core_version": "V3",
             "engine_name": "Pro Analysis Engine V3",
@@ -498,17 +705,17 @@ class ProAnalysisEngineV3:
             "reason": reason,
             "timeframe": timeframe,
             "detected_zones": [zone for zone in detected_zones if zone],
-            "invalidation_condition": "Wait for the next valid XAUUSD data state.",
+            "invalidation_condition": f"Wait for the next valid {self.symbol} data state.",
         }
 
     def _score_result(self, score: int) -> str:
         if score >= 85:
             return "High Quality Setup"
         if score >= 75:
-            return "Waiting Confirmation"
+            return "Valid Setup"
         if score >= 60:
-            return "Weak Setup"
-        return "No Trade"
+            return "Developing Setup"
+        return "Low Confidence Plan"
 
     def _final_action(self, decision: str, locked_mode: str) -> str:
         if locked_mode == "TEST_MODE":

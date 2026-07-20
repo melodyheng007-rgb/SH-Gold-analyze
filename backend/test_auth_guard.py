@@ -1,0 +1,73 @@
+import os
+import unittest
+from unittest.mock import Mock, patch
+
+from engine.auth_guard import AuthGuardError, SupabaseAuthGuard
+
+
+class SupabaseAuthGuardTests(unittest.TestCase):
+    def make_guard(self, **overrides):
+        values = {
+            "AUTH_REQUIRED": "true",
+            "SUPABASE_URL": "https://project.supabase.co",
+            "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test",
+            "AUTH_CACHE_SECONDS": "45",
+            **overrides,
+        }
+        with patch.dict(os.environ, values, clear=False):
+            return SupabaseAuthGuard()
+
+    def test_auth_is_optional_for_local_development(self):
+        guard = self.make_guard(AUTH_REQUIRED="false")
+        self.assertFalse(guard.protects("GET", "/api/market/chart-live"))
+
+    def test_auth_is_required_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            guard = SupabaseAuthGuard()
+        self.assertTrue(guard.required)
+        self.assertTrue(guard.protects("GET", "/api/market/chart-live"))
+
+    def test_health_and_preflight_remain_public(self):
+        guard = self.make_guard()
+        self.assertFalse(guard.protects("GET", "/api/health"))
+        self.assertFalse(guard.protects("OPTIONS", "/api/market/chart-live"))
+        self.assertTrue(guard.protects("GET", "/api/market/chart-live"))
+        self.assertTrue(guard.protects("GET", "/docs"))
+
+    def test_sensitive_tools_require_admin_role(self):
+        guard = self.make_guard()
+        self.assertTrue(guard.requires_admin("/api/xauusd/provider-settings"))
+        self.assertTrue(guard.requires_admin("/api/xauusd/reset-database"))
+        self.assertFalse(guard.requires_admin("/api/market/chart-live"))
+
+    def test_missing_bearer_token_is_rejected(self):
+        guard = self.make_guard()
+        with self.assertRaises(AuthGuardError) as captured:
+            guard.verify("")
+        self.assertEqual(captured.exception.status_code, 401)
+        self.assertEqual(captured.exception.code, "AUTH_REQUIRED")
+
+    def test_valid_user_is_cached_without_storing_plain_token(self):
+        guard = self.make_guard()
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "id": "user-123",
+            "email": "user@example.com",
+            "role": "authenticated",
+            "aud": "authenticated",
+            "app_metadata": {"role": "admin"},
+        }
+        guard._session.get = Mock(return_value=response)
+
+        first = guard.verify("Bearer access-token")
+        second = guard.verify("Bearer access-token")
+
+        self.assertEqual(first["id"], "user-123")
+        self.assertEqual(first["app_role"], "admin")
+        self.assertEqual(second, first)
+        guard._session.get.assert_called_once()
+        self.assertNotIn("access-token", guard._cache)
+
+
+if __name__ == "__main__":
+    unittest.main()

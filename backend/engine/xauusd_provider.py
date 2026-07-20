@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import ctypes
+import ipaddress
 import json
 import os
 import random
+import socket
 import sqlite3
 import threading
 import time
@@ -13,6 +17,9 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 import requests
+import urllib3
+from requests.certs import where as requests_ca_bundle
+from urllib.parse import urlencode
 
 from .data_loader import candles_to_records, load_ohlcv
 
@@ -32,6 +39,8 @@ USER_RECENT_CSV_SOURCE = "USER_RECENT_CSV"
 REAL_CSV_HISTORY_SOURCE = "REAL_CSV_HISTORY"
 ARCHIVED_STALE_SOURCE = "ARCHIVED_STALE_HISTORY"
 TWELVE_DATA_HISTORY_SOURCE = "TWELVE_DATA_REAL_HISTORY"
+OANDA_HISTORY_SOURCE = "OANDA_XAUUSD_REAL_HISTORY"
+BINANCE_HISTORY_SOURCE = "BINANCE_BTCUSDT_REAL_HISTORY"
 SOURCE_NAME = LIVE_SOURCE
 LIVE_HISTORY_WARNING = "Live candle builder is running, but not enough candle history for full multi-timeframe analysis yet."
 NO_LIVE_CANDLES_MESSAGE = "No live XAUUSD candle data available. Please check API key, provider limit, or connection."
@@ -40,7 +49,16 @@ NO_HISTORY_FILES_MESSAGE = "Preloaded history files are missing. Please add CSV 
 SUPPORTED_TIMEFRAMES = ["1M", "5M", "15M", "1H", "4H", "1D"]
 ANALYSIS_TIMEFRAMES = ["5M", "15M", "1H", "4H", "1D"]
 MIN_ANALYSIS_CANDLES = {"5M": 100, "15M": 100, "1H": 100, "4H": 50, "1D": 30}
-REAL_RECENT_SOURCES = {RECENT_CSV_SOURCE, USER_RECENT_CSV_SOURCE, REAL_CSV_HISTORY_SOURCE, PRELOADED_SOURCE, WARMUP_SOURCE, TWELVE_DATA_HISTORY_SOURCE}
+REAL_RECENT_SOURCES = {
+    RECENT_CSV_SOURCE,
+    USER_RECENT_CSV_SOURCE,
+    REAL_CSV_HISTORY_SOURCE,
+    PRELOADED_SOURCE,
+    WARMUP_SOURCE,
+    TWELVE_DATA_HISTORY_SOURCE,
+    OANDA_HISTORY_SOURCE,
+    BINANCE_HISTORY_SOURCE,
+}
 TEST_HISTORY_SOURCES = {TEST_HISTORY_SOURCE, TEST_HISTORY_LIVE_ANCHORED_SOURCE}
 HISTORY_SOURCES = REAL_RECENT_SOURCES | TEST_HISTORY_SOURCES
 LIVE_SOURCES = {LIVE_SOURCE, LIVE_BUILDER_SOURCE}
@@ -56,81 +74,235 @@ TABLES = {
     "1D": "candles_1d",
 }
 
+DPAPI_PREFIX = "dpapi:"
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [
+        ("cbData", ctypes.c_ulong),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+def _windows_protect_secret(value: str) -> Optional[str]:
+    if os.name != "nt" or not value:
+        return None
+    raw = value.encode("utf-8")
+    buffer = ctypes.create_string_buffer(raw)
+    source = _DataBlob(len(raw), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    protected = _DataBlob()
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    if not crypt32.CryptProtectData(
+        ctypes.byref(source),
+        "SH Market Analyzer OANDA credential",
+        None,
+        None,
+        None,
+        0x01,
+        ctypes.byref(protected),
+    ):
+        raise ctypes.WinError()
+    try:
+        encrypted = ctypes.string_at(protected.pbData, protected.cbData)
+        return DPAPI_PREFIX + base64.b64encode(encrypted).decode("ascii")
+    finally:
+        kernel32.LocalFree(protected.pbData)
+
+
+def _windows_unprotect_secret(value: str) -> Optional[str]:
+    if os.name != "nt" or not value.startswith(DPAPI_PREFIX):
+        return None
+    raw = base64.b64decode(value[len(DPAPI_PREFIX):])
+    buffer = ctypes.create_string_buffer(raw)
+    source = _DataBlob(len(raw), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    unprotected = _DataBlob()
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(source),
+        None,
+        None,
+        None,
+        None,
+        0x01,
+        ctypes.byref(unprotected),
+    ):
+        raise ctypes.WinError()
+    try:
+        decrypted = ctypes.string_at(unprotected.pbData, unprotected.cbData)
+        return decrypted.decode("utf-8")
+    finally:
+        kernel32.LocalFree(unprotected.pbData)
+
 
 class ProviderSettings:
     def __init__(self, settings_path: str):
         self.settings_path = Path(settings_path)
+        self._lock = threading.RLock()
+        self._migrate_oanda_token()
 
     def get(self, name: str) -> str:
-        env_name = {"goldapi_key": "GOLDAPI_KEY", "goldapi_io_key": "GOLDAPI_IO_KEY"}.get(name, name.upper())
+        env_name = {
+            "goldapi_key": "GOLDAPI_KEY",
+            "goldapi_io_key": "GOLDAPI_IO_KEY",
+            "oanda_api_token": "OANDA_API_TOKEN",
+        }.get(name, name.upper())
         value = os.getenv(env_name)
         if value:
             return value.strip()
-        return str(self._load().get(name, "")).strip()
-
-    def update(self, values: Dict[str, Any]) -> Dict[str, bool]:
         data = self._load()
-        for key in ["goldapi_key", "goldapi_io_key", "twelve_data_api_key"]:
-            value = str(values.get(key, "")).strip()
-            if value:
-                data[key] = value
-        if "test_mode_enabled" in values:
-            data["test_mode_enabled"] = bool(values.get("test_mode_enabled"))
-        if "data_mode" in values:
-            data["data_mode"] = str(values.get("data_mode", "")).strip().upper()
-        if "show_stale_history" in values:
-            data["show_stale_history"] = bool(values.get("show_stale_history"))
-        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        if name == "oanda_api_token":
+            protected = str(data.get("oanda_api_token_protected") or "").strip()
+            if protected:
+                try:
+                    return str(_windows_unprotect_secret(protected) or "").strip()
+                except Exception:
+                    return ""
+        return str(data.get(name, "")).strip()
+
+    def update(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            data = self._load_unlocked()
+            for key in ["goldapi_key", "goldapi_io_key", "twelve_data_api_key", "oanda_api_token"]:
+                value = str(values.get(key, "")).strip()
+                if value:
+                    if key == "oanda_api_token":
+                        self._store_oanda_token(data, value)
+                    else:
+                        data[key] = value
+            if "oanda_environment" in values:
+                environment = str(values.get("oanda_environment") or "practice").strip().lower()
+                data["oanda_environment"] = environment if environment in {"practice", "live"} else "practice"
+            if "test_mode_enabled" in values:
+                data["test_mode_enabled"] = bool(values.get("test_mode_enabled"))
+            if "data_mode" in values:
+                data["data_mode"] = str(values.get("data_mode", "")).strip().upper()
+            if "show_stale_history" in values:
+                data["show_stale_history"] = bool(values.get("show_stale_history"))
+            self._write_unlocked(data)
         return self.masked_status()
 
-    def masked_status(self) -> Dict[str, bool]:
+    def save_verified_oanda(self, token: str, environment: str, verified_at: Optional[str] = None) -> Dict[str, Any]:
+        access_token = str(token or "").strip()
+        if not access_token:
+            raise ValueError("A verified OANDA token is required before it can be saved.")
+        selected_environment = str(environment or "practice").strip().lower()
+        if selected_environment not in {"practice", "live"}:
+            selected_environment = "practice"
+        with self._lock:
+            data = self._load_unlocked()
+            data.update({
+                "oanda_environment": selected_environment,
+                "oanda_verified_at": verified_at or datetime.now(timezone.utc).isoformat(),
+            })
+            self._store_oanda_token(data, access_token)
+            self._write_unlocked(data)
+        return self.masked_status()
+
+    def mark_oanda_verified(self, verified_at: Optional[str] = None) -> Dict[str, Any]:
+        with self._lock:
+            data = self._load_unlocked()
+            if not self.get("oanda_api_token"):
+                return self.masked_status()
+            data["oanda_verified_at"] = verified_at or datetime.now(timezone.utc).isoformat()
+            self._write_unlocked(data)
+        return self.masked_status()
+
+    def masked_status(self) -> Dict[str, Any]:
+        token_saved = bool(self.get("oanda_api_token"))
+        verified_at = self.get("oanda_verified_at") or None
         return {
             "gold_api_com_key_required": False,
             "goldapi_io_key": bool(self.get("goldapi_io_key") or self.get("goldapi_key")),
             "twelve_data_api_key": bool(self.get("twelve_data_api_key")),
+            "oanda_api_token": token_saved,
+            "oanda_environment": self.get("oanda_environment") or "practice",
+            "oanda_credential_state": "VERIFIED" if token_saved and verified_at else "SAVED" if token_saved else "NOT_CONFIGURED",
+            "oanda_verified_at": verified_at,
             "test_mode_enabled": self.test_mode_enabled(),
             "data_mode": self.data_mode(),
             "show_stale_history": self.show_stale_history(),
         }
 
     def set_test_mode(self, enabled: bool) -> Dict[str, bool]:
-        data = self._load()
-        data["test_mode_enabled"] = bool(enabled)
-        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with self._lock:
+            data = self._load_unlocked()
+            data["test_mode_enabled"] = bool(enabled)
+            self._write_unlocked(data)
         return self.masked_status()
 
     def test_mode_enabled(self) -> bool:
         return bool(self._load().get("test_mode_enabled", False))
 
     def set_data_mode(self, mode: str) -> Dict[str, Any]:
-        data = self._load()
-        data["data_mode"] = mode.strip().upper()
-        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with self._lock:
+            data = self._load_unlocked()
+            data["data_mode"] = mode.strip().upper()
+            self._write_unlocked(data)
         return self.masked_status()
 
     def data_mode(self) -> str:
         return str(self._load().get("data_mode", "AUTO")).upper()
 
     def set_show_stale_history(self, enabled: bool) -> Dict[str, Any]:
-        data = self._load()
-        data["show_stale_history"] = bool(enabled)
-        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with self._lock:
+            data = self._load_unlocked()
+            data["show_stale_history"] = bool(enabled)
+            self._write_unlocked(data)
         return self.masked_status()
 
     def show_stale_history(self) -> bool:
         return bool(self._load().get("show_stale_history", False))
 
-    def _load(self) -> Dict[str, str]:
+    def _load(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._load_unlocked()
+
+    def _load_unlocked(self) -> Dict[str, Any]:
         if not self.settings_path.exists():
             return {}
         try:
-            return json.loads(self.settings_path.read_text(encoding="utf-8"))
+            data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
+
+    def _write_unlocked(self, data: Dict[str, Any]) -> None:
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.settings_path.with_name(
+            f".{self.settings_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            os.replace(temporary, self.settings_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink(missing_ok=True)
+
+    def _store_oanda_token(self, data: Dict[str, Any], token: str) -> None:
+        protected = _windows_protect_secret(token)
+        if protected:
+            data["oanda_api_token_protected"] = protected
+            data.pop("oanda_api_token", None)
+        else:
+            data["oanda_api_token"] = token
+
+    def _migrate_oanda_token(self) -> None:
+        if os.name != "nt":
+            return
+        with self._lock:
+            data = self._load_unlocked()
+            token = str(data.get("oanda_api_token") or "").strip()
+            if data.get("oanda_api_token_protected"):
+                if token:
+                    data.pop("oanda_api_token", None)
+                    self._write_unlocked(data)
+                return
+            if not token:
+                return
+            self._store_oanda_token(data, token)
+            self._write_unlocked(data)
 
 
 @dataclass
@@ -492,10 +664,13 @@ class SQLiteCandleStore:
             ).fetchone()
         return row["timestamp"] if row else None
 
-    def latest_any_timestamp(self, timeframe: str = "15M") -> Optional[str]:
+    def latest_any_timestamp(self, timeframe: str = "15M", completed_only: bool = False) -> Optional[str]:
         tf = normalize_timeframe(timeframe)
         with self.connect() as conn:
-            row = conn.execute(f"SELECT timestamp FROM {TABLES[tf]} ORDER BY timestamp DESC LIMIT 1").fetchone()
+            complete_filter = " WHERE is_complete = 1" if completed_only else ""
+            row = conn.execute(
+                f"SELECT timestamp FROM {TABLES[tf]}{complete_filter} ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
         return row["timestamp"] if row else None
 
     def has_source(self, timeframe: str, source: str) -> bool:
@@ -504,7 +679,12 @@ class SQLiteCandleStore:
             row = conn.execute(f"SELECT 1 FROM {TABLES[tf]} WHERE source = ? LIMIT 1", (source,)).fetchone()
         return bool(row)
 
-    def latest_candle_for_sources(self, timeframe: str, sources: set[str]) -> Optional[Dict[str, Any]]:
+    def latest_candle_for_sources(
+        self,
+        timeframe: str,
+        sources: set[str],
+        completed_only: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         tf = normalize_timeframe(timeframe)
         if not sources:
             return None
@@ -512,9 +692,10 @@ class SQLiteCandleStore:
         with self.connect() as conn:
             row = conn.execute(
                 f"""
-                SELECT timestamp, close, source
+                SELECT timestamp, close, source, is_complete, is_partial
                 FROM {TABLES[tf]}
                 WHERE source IN ({placeholders})
+                  {"AND is_complete = 1" if completed_only else ""}
                 ORDER BY timestamp DESC
                 LIMIT 1
                 """,
@@ -522,15 +703,22 @@ class SQLiteCandleStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def latest_timestamp_for_sources(self, timeframe: str, sources: set[str]) -> Optional[str]:
-        latest = self.latest_candle_for_sources(timeframe, sources)
+    def latest_timestamp_for_sources(
+        self,
+        timeframe: str,
+        sources: set[str],
+        completed_only: bool = False,
+    ) -> Optional[str]:
+        latest = self.latest_candle_for_sources(timeframe, sources, completed_only=completed_only)
         return latest.get("timestamp") if latest else None
 
     def source_counts(self) -> Dict[str, Dict[str, int]]:
         out: Dict[str, Dict[str, int]] = {}
         with self.connect() as conn:
             for tf, table in TABLES.items():
-                rows = conn.execute(f"SELECT source, COUNT(*) AS count FROM {table} GROUP BY source").fetchall()
+                rows = conn.execute(
+                    f"SELECT source, COUNT(*) AS count FROM {table} WHERE is_complete = 1 GROUP BY source"
+                ).fetchall()
                 out[tf] = {row["source"]: int(row["count"]) for row in rows}
         return out
 
@@ -563,6 +751,10 @@ class SQLiteCandleStore:
             return "NO_HISTORY"
         sources = {row["source"] for row in rows}
         live_sources = {LIVE_SOURCE, LIVE_BUILDER_SOURCE}
+        if OANDA_HISTORY_SOURCE in sources:
+            return OANDA_HISTORY_SOURCE
+        if BINANCE_HISTORY_SOURCE in sources:
+            return BINANCE_HISTORY_SOURCE
         if REAL_CSV_HISTORY_SOURCE in sources:
             return "REAL_CSV_HISTORY"
         if TWELVE_DATA_HISTORY_SOURCE in sources:
@@ -735,9 +927,19 @@ class TwelveDataHistoryService:
         "1D": 250,
     }
 
-    def __init__(self, settings: ProviderSettings, store: SQLiteCandleStore):
+    def __init__(
+        self,
+        settings: ProviderSettings,
+        store: SQLiteCandleStore,
+        market_symbol: str = "XAU/USD",
+        provider_name: Optional[str] = None,
+        source: str = TWELVE_DATA_HISTORY_SOURCE,
+    ):
         self.settings = settings
         self.store = store
+        self.market_symbol = market_symbol
+        self.provider_name = provider_name or f"Twelve Data {market_symbol} OHLC"
+        self.source = source
 
     def sync_recent_history(self, timeframes: Optional[list[str]] = None) -> Dict[str, Any]:
         api_key = self.settings.get("twelve_data_api_key")
@@ -757,7 +959,7 @@ class TwelveDataHistoryService:
             tf = normalize_timeframe(raw_tf)
             try:
                 candles = self._fetch_timeframe(tf, api_key)
-                imported[tf] = self.store.insert_candles(tf, candles, TWELVE_DATA_HISTORY_SOURCE)
+                imported[tf] = self.store.insert_candles(tf, candles, self.source)
                 latest[tf] = candles[-1]["timestamp"] if candles else None
             except Exception as exc:
                 errors[tf] = str(exc)
@@ -765,22 +967,28 @@ class TwelveDataHistoryService:
             "ok": not errors and bool(imported),
             "status": "TWELVE_DATA_HISTORY_SYNCED" if imported else "TWELVE_DATA_NO_HISTORY",
             "provider": self.provider_name,
-            "source": TWELVE_DATA_HISTORY_SOURCE,
+            "source": self.source,
             "imported": imported,
             "latest": latest,
             "errors": errors,
             "candle_counts": self.store.counts(),
         }
 
-    def _fetch_timeframe(self, timeframe: str, api_key: str) -> list[Dict[str, Any]]:
+    def _fetch_timeframe(
+        self,
+        timeframe: str,
+        api_key: str,
+        include_incomplete: bool = False,
+        outputsize: Optional[int] = None,
+    ) -> list[Dict[str, Any]]:
         interval = self.interval_map[timeframe]
-        outputsize = self.output_sizes[timeframe]
+        requested_size = outputsize or self.output_sizes[timeframe]
         response = requests.get(
             "https://api.twelvedata.com/time_series",
             params={
-                "symbol": "XAU/USD",
+                "symbol": self.market_symbol,
                 "interval": interval,
-                "outputsize": outputsize,
+                "outputsize": requested_size,
                 "timezone": "UTC",
                 "apikey": api_key,
             },
@@ -794,6 +1002,8 @@ class TwelveDataHistoryService:
         if not values:
             raise RuntimeError("Twelve Data returned no candle values.")
         rows = []
+        now = pd.Timestamp.now(tz="UTC")
+        duration = pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
         for item in values:
             timestamp = pd.to_datetime(item.get("datetime"), errors="coerce", utc=True)
             if pd.isna(timestamp):
@@ -809,16 +1019,534 @@ class TwelveDataHistoryService:
                 continue
             if high < max(open_, close, low) or low > min(open_, close, high):
                 continue
+            is_complete = timestamp + duration <= now
+            if not is_complete and not include_incomplete:
+                continue
             rows.append({
                 "timestamp": timestamp.isoformat(),
                 "open": round(open_, 3),
                 "high": round(high, 3),
                 "low": round(low, 3),
                 "close": round(close, 3),
+                "is_complete": is_complete,
+                "is_partial": not is_complete,
             })
         rows.sort(key=lambda candle: candle["timestamp"])
         deduped: Dict[str, Dict[str, Any]] = {candle["timestamp"]: candle for candle in rows}
         return list(deduped.values())
+
+    def sync_live_candle(self, timeframe: str) -> Dict[str, Any]:
+        tf = normalize_timeframe(timeframe)
+        api_key = self.settings.get("twelve_data_api_key")
+        if not api_key:
+            return {
+                "ok": False,
+                "status": "TWELVE_DATA_KEY_MISSING",
+                "provider": self.provider_name,
+                "source": self.source,
+                "message": "Twelve Data API key is missing.",
+            }
+        try:
+            candles = self._fetch_timeframe(tf, api_key, include_incomplete=True, outputsize=3)
+            return _persist_chart_candles(self.store, tf, candles, self.source, self.provider_name)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "LIVE_CANDLE_SYNC_FAILED",
+                "provider": self.provider_name,
+                "source": self.source,
+                "message": str(exc),
+            }
+
+
+class OandaHistoryService:
+    provider_name = "OANDA XAU_USD Mid OHLC"
+    instrument = "XAU_USD"
+    source = OANDA_HISTORY_SOURCE
+    granularity_map = {
+        "1M": "M1",
+        "5M": "M5",
+        "15M": "M15",
+        "1H": "H1",
+        "4H": "H4",
+        "1D": "D",
+    }
+    output_sizes = TwelveDataHistoryService.output_sizes
+
+    def __init__(self, settings: ProviderSettings, store: SQLiteCandleStore):
+        self.settings = settings
+        self.store = store
+        self._dns_cache: Dict[str, tuple[float, list[str]]] = {}
+        self._dns_lock = threading.Lock()
+        self._transport_state = threading.local()
+
+    @staticmethod
+    def _endpoint_host(environment: str) -> str:
+        return "api-fxtrade.oanda.com" if environment == "live" else "api-fxpractice.oanda.com"
+
+    @classmethod
+    def _endpoint_resolution_error(cls, environment: str) -> Optional[Dict[str, Any]]:
+        host = cls._endpoint_host(environment)
+        try:
+            addresses = sorted({
+                str(item[4][0])
+                for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                if item[4]
+            })
+        except socket.gaierror:
+            return {
+                "status": "DNS_FAILED",
+                "host": host,
+                "resolved_addresses": [],
+                "message": f"DNS could not resolve {host}. Check the device or router DNS, then retry.",
+            }
+
+        blocked = []
+        for address in addresses:
+            try:
+                parsed = ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if (
+                parsed.is_loopback
+                or parsed.is_unspecified
+                or parsed.is_private
+                or parsed.is_link_local
+                or parsed.is_multicast
+                or parsed.is_reserved
+            ):
+                blocked.append(address)
+        if not blocked:
+            return None
+        return {
+            "status": "DNS_BLOCKED",
+            "host": host,
+            "resolved_addresses": addresses,
+            "message": (
+                f"{host} resolves to a local address ({', '.join(blocked)}), so the backend cannot reach OANDA. "
+                "Change Windows or router DNS to 1.1.1.1 or 8.8.8.8, flush DNS, then verify again."
+            ),
+        }
+
+    def _public_dns_addresses(self, host: str) -> list[str]:
+        now = time.monotonic()
+        with self._dns_lock:
+            cached = self._dns_cache.get(host)
+            if cached and cached[0] > now:
+                return list(cached[1])
+
+        errors = []
+        providers = [
+            ("https://cloudflare-dns.com/dns-query", {"name": host, "type": "A"}, {"accept": "application/dns-json"}),
+            ("https://dns.google/resolve", {"name": host, "type": "A"}, {}),
+        ]
+        for url, params, headers in providers:
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=8)
+                response.raise_for_status()
+                payload = response.json()
+                addresses = []
+                for answer in payload.get("Answer") or []:
+                    if int(answer.get("type") or 0) != 1:
+                        continue
+                    address = str(answer.get("data") or "").strip()
+                    try:
+                        parsed = ipaddress.ip_address(address)
+                    except ValueError:
+                        continue
+                    if not any((parsed.is_private, parsed.is_loopback, parsed.is_link_local, parsed.is_reserved, parsed.is_multicast)):
+                        addresses.append(address)
+                if addresses:
+                    unique_addresses = list(dict.fromkeys(addresses))
+                    with self._dns_lock:
+                        self._dns_cache[host] = (now + 300, unique_addresses)
+                    return unique_addresses
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+        raise ConnectionError(f"Secure DNS lookup failed for {host}: {', '.join(errors) or 'no public address'}")
+
+    def _request_via_public_dns(
+        self,
+        host: str,
+        path: str,
+        params: Dict[str, Any],
+        headers: Dict[str, str],
+    ) -> Dict[str, Any]:
+        query = urlencode(params)
+        request_path = f"{path}?{query}" if query else path
+        last_error: Optional[Exception] = None
+        for address in self._public_dns_addresses(host):
+            pool = urllib3.HTTPSConnectionPool(
+                address,
+                port=443,
+                server_hostname=host,
+                assert_hostname=host,
+                cert_reqs="CERT_REQUIRED",
+                ca_certs=requests_ca_bundle(),
+                timeout=urllib3.Timeout(connect=8, read=20),
+            )
+            try:
+                raw = pool.request(
+                    "GET",
+                    request_path,
+                    headers={**headers, "Host": host},
+                    retries=False,
+                )
+                response = requests.Response()
+                response.status_code = raw.status
+                response._content = raw.data
+                response.url = f"https://{host}{request_path}"
+                response.headers.update(dict(raw.headers))
+                response.raise_for_status()
+                self._transport_state.dns_recovery = True
+                with self._dns_lock:
+                    cached = self._dns_cache.get(host)
+                    remaining = [item for item in (cached[1] if cached else []) if item != address]
+                    self._dns_cache[host] = (time.monotonic() + 300, [address, *remaining])
+                return response.json()
+            except requests.HTTPError:
+                raise
+            except Exception as exc:
+                last_error = exc
+            finally:
+                pool.close()
+        raise ConnectionError(f"Could not connect to {host} through secure DNS recovery") from last_error
+
+    def _request_candle_payload(
+        self,
+        host: str,
+        params: Dict[str, Any],
+        token: str,
+    ) -> Dict[str, Any]:
+        path = f"/v3/instruments/{self.instrument}/candles"
+        headers = {"Authorization": f"Bearer {token}"}
+        resolution_error = self._endpoint_resolution_error(
+            "live" if host == self._endpoint_host("live") else "practice"
+        )
+        if resolution_error:
+            return self._request_via_public_dns(host, path, params, headers)
+        response = requests.get(
+            f"https://{host}{path}",
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def sync_recent_history(self, timeframes: Optional[list[str]] = None) -> Dict[str, Any]:
+        self._transport_state.dns_recovery = False
+        token = self.settings.get("oanda_api_token")
+        environment = (self.settings.get("oanda_environment") or "practice").lower()
+        if not token:
+            return {
+                "ok": False,
+                "status": "OANDA_TOKEN_MISSING",
+                "provider": self.provider_name,
+                "source": self.source,
+                "message": "OANDA API token is missing. Add it in Data settings to match OANDA:XAUUSD.",
+                "imported": {},
+                "errors": {},
+            }
+        imported: Dict[str, int] = {}
+        errors: Dict[str, str] = {}
+        latest: Dict[str, Optional[str]] = {}
+        for raw_tf in (timeframes or SUPPORTED_TIMEFRAMES):
+            tf = normalize_timeframe(raw_tf)
+            try:
+                candles = self._fetch_timeframe(tf, token, environment)
+                imported[tf] = self.store.insert_candles(tf, candles, self.source)
+                latest[tf] = candles[-1]["timestamp"] if candles else None
+            except Exception as exc:
+                errors[tf] = str(exc)
+        return {
+            "ok": not errors and bool(imported),
+            "status": "OANDA_HISTORY_SYNCED" if imported else "OANDA_NO_HISTORY",
+            "provider": self.provider_name,
+            "source": self.source,
+            "instrument": self.instrument,
+            "environment": environment,
+            "imported": imported,
+            "latest": latest,
+            "errors": errors,
+            "candle_counts": self.store.counts(),
+            "dns_recovery": bool(getattr(self._transport_state, "dns_recovery", False)),
+        }
+
+    def _fetch_timeframe(
+        self,
+        timeframe: str,
+        token: str,
+        environment: str,
+        include_incomplete: bool = False,
+        count: Optional[int] = None,
+    ) -> list[Dict[str, Any]]:
+        host = self._endpoint_host(environment)
+        payload = self._request_candle_payload(
+            host,
+            {
+                "granularity": self.granularity_map[timeframe],
+                "count": count or self.output_sizes[timeframe],
+                "price": "M",
+                "smooth": "false",
+            },
+            token,
+        )
+        if payload.get("errorMessage"):
+            raise RuntimeError(payload["errorMessage"])
+        rows = []
+        for item in payload.get("candles") or []:
+            mid = item.get("mid") or {}
+            is_complete = bool(item.get("complete"))
+            if (not is_complete and not include_incomplete) or not mid:
+                continue
+            timestamp = pd.to_datetime(item.get("time"), errors="coerce", utc=True)
+            if pd.isna(timestamp):
+                continue
+            candle = _normalized_history_candle(timestamp, mid.get("o"), mid.get("h"), mid.get("l"), mid.get("c"))
+            if candle:
+                candle["is_complete"] = is_complete
+                candle["is_partial"] = not is_complete
+                rows.append(candle)
+        rows.sort(key=lambda candle: candle["timestamp"])
+        return list({candle["timestamp"]: candle for candle in rows}.values())
+
+    def sync_live_candle(self, timeframe: str) -> Dict[str, Any]:
+        self._transport_state.dns_recovery = False
+        tf = normalize_timeframe(timeframe)
+        token = self.settings.get("oanda_api_token")
+        environment = (self.settings.get("oanda_environment") or "practice").lower()
+        if not token:
+            return {
+                "ok": False,
+                "status": "OANDA_TOKEN_MISSING",
+                "provider": self.provider_name,
+                "source": self.source,
+                "message": "OANDA API token is missing.",
+            }
+        try:
+            candles = self._fetch_timeframe(tf, token, environment, include_incomplete=True, count=3)
+            result = _persist_chart_candles(self.store, tf, candles, self.source, self.provider_name)
+            result["environment"] = environment
+            result["dns_recovery"] = bool(getattr(self._transport_state, "dns_recovery", False))
+            return result
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "LIVE_CANDLE_SYNC_FAILED",
+                "provider": self.provider_name,
+                "source": self.source,
+                "message": str(exc),
+            }
+
+    def verify_connection(self, token: Optional[str] = None, environment: Optional[str] = None) -> Dict[str, Any]:
+        self._transport_state.dns_recovery = False
+        access_token = (token or self.settings.get("oanda_api_token") or "").strip()
+        selected_environment = (environment or self.settings.get("oanda_environment") or "practice").lower()
+        if selected_environment not in {"practice", "live"}:
+            selected_environment = "practice"
+        if not access_token:
+            return {
+                "ok": False,
+                "status": "TOKEN_MISSING",
+                "provider": self.provider_name,
+                "environment": selected_environment,
+                "message": "Enter an OANDA personal access token.",
+            }
+        started = time.perf_counter()
+        try:
+            candles = self._fetch_timeframe(
+                "5M",
+                access_token,
+                selected_environment,
+                include_incomplete=True,
+                count=3,
+            )
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            return {
+                "ok": False,
+                "status": "TOKEN_REJECTED" if status_code in {401, 403} else "PROVIDER_ERROR",
+                "provider": self.provider_name,
+                "environment": selected_environment,
+                "http_status": status_code,
+                "message": "OANDA rejected the token or environment." if status_code in {401, 403} else "OANDA is unavailable for verification.",
+            }
+        except Exception:
+            return {
+                "ok": False,
+                "status": "CONNECTION_FAILED",
+                "provider": self.provider_name,
+                "environment": selected_environment,
+                "message": "Could not connect to the OANDA candle endpoint.",
+            }
+        latest = candles[-1] if candles else None
+        return {
+            "ok": bool(candles),
+            "status": "VERIFIED" if candles else "NO_CANDLES",
+            "provider": self.provider_name,
+            "source": self.source,
+            "instrument": self.instrument,
+            "environment": selected_environment,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "candle_count": len(candles),
+            "latest_candle_time": latest.get("timestamp") if latest else None,
+            "latest_close": latest.get("close") if latest else None,
+            "dns_recovery": bool(getattr(self._transport_state, "dns_recovery", False)),
+            "message": "OANDA XAU_USD candle access verified." if candles else "OANDA returned no XAU_USD candles.",
+        }
+
+
+class BinanceHistoryService:
+    provider_name = "Binance BTCUSDT Spot OHLC"
+    market_symbol = "BTCUSDT"
+    source = BINANCE_HISTORY_SOURCE
+    interval_map = {
+        "1M": "1m",
+        "5M": "5m",
+        "15M": "15m",
+        "1H": "1h",
+        "4H": "4h",
+        "1D": "1d",
+    }
+    output_sizes = TwelveDataHistoryService.output_sizes
+
+    def __init__(self, store: SQLiteCandleStore):
+        self.store = store
+
+    def sync_recent_history(self, timeframes: Optional[list[str]] = None) -> Dict[str, Any]:
+        imported: Dict[str, int] = {}
+        errors: Dict[str, str] = {}
+        latest: Dict[str, Optional[str]] = {}
+        for raw_tf in (timeframes or SUPPORTED_TIMEFRAMES):
+            tf = normalize_timeframe(raw_tf)
+            try:
+                candles = self._fetch_timeframe(tf)
+                imported[tf] = self.store.insert_candles(tf, candles, self.source)
+                latest[tf] = candles[-1]["timestamp"] if candles else None
+            except Exception as exc:
+                errors[tf] = str(exc)
+        return {
+            "ok": not errors and bool(imported),
+            "status": "BINANCE_HISTORY_SYNCED" if imported else "BINANCE_NO_HISTORY",
+            "provider": self.provider_name,
+            "source": self.source,
+            "symbol": self.market_symbol,
+            "imported": imported,
+            "latest": latest,
+            "errors": errors,
+            "candle_counts": self.store.counts(),
+        }
+
+    def _fetch_timeframe(
+        self,
+        timeframe: str,
+        include_incomplete: bool = False,
+        limit: Optional[int] = None,
+    ) -> list[Dict[str, Any]]:
+        response = requests.get(
+            "https://data-api.binance.vision/api/v3/klines",
+            params={
+                "symbol": self.market_symbol,
+                "interval": self.interval_map[timeframe],
+                "limit": limit or self.output_sizes[timeframe],
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict):
+            raise RuntimeError(payload.get("msg") or "Binance returned an invalid candle response.")
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        rows = []
+        for item in payload:
+            if len(item) < 7:
+                continue
+            is_complete = int(item[6]) <= now_ms
+            if not is_complete and not include_incomplete:
+                continue
+            timestamp = pd.to_datetime(int(item[0]), unit="ms", errors="coerce", utc=True)
+            if pd.isna(timestamp):
+                continue
+            candle = _normalized_history_candle(timestamp, item[1], item[2], item[3], item[4])
+            if candle:
+                candle["is_complete"] = is_complete
+                candle["is_partial"] = not is_complete
+                rows.append(candle)
+        rows.sort(key=lambda candle: candle["timestamp"])
+        return list({candle["timestamp"]: candle for candle in rows}.values())
+
+    def sync_live_candle(self, timeframe: str) -> Dict[str, Any]:
+        tf = normalize_timeframe(timeframe)
+        try:
+            candles = self._fetch_timeframe(tf, include_incomplete=True, limit=3)
+            return _persist_chart_candles(self.store, tf, candles, self.source, self.provider_name)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "LIVE_CANDLE_SYNC_FAILED",
+                "provider": self.provider_name,
+                "source": self.source,
+                "message": str(exc),
+            }
+
+
+def _normalized_history_candle(timestamp: Any, open_: Any, high: Any, low: Any, close: Any) -> Optional[Dict[str, Any]]:
+    try:
+        open_value = float(open_)
+        high_value = float(high)
+        low_value = float(low)
+        close_value = float(close)
+    except (TypeError, ValueError):
+        return None
+    if min(open_value, high_value, low_value, close_value) <= 0:
+        return None
+    if high_value < max(open_value, close_value, low_value) or low_value > min(open_value, close_value, high_value):
+        return None
+    return {
+        "timestamp": pd.Timestamp(timestamp).isoformat(),
+        "open": round(open_value, 3),
+        "high": round(high_value, 3),
+        "low": round(low_value, 3),
+        "close": round(close_value, 3),
+    }
+
+
+def _persist_chart_candles(
+    store: SQLiteCandleStore,
+    timeframe: str,
+    candles: list[Dict[str, Any]],
+    source: str,
+    provider: str,
+) -> Dict[str, Any]:
+    completed = [candle for candle in candles if candle.get("is_complete", True)]
+    partial = [candle for candle in candles if not candle.get("is_complete", True)]
+    imported = store.insert_candles(timeframe, completed, source)
+    for candle in partial:
+        store.upsert_candle(
+            timeframe,
+            candle["timestamp"],
+            float(candle["open"]),
+            float(candle["high"]),
+            float(candle["low"]),
+            float(candle["close"]),
+            source=source,
+            is_complete=False,
+            is_partial=True,
+            confidence="LIVE",
+        )
+    latest = candles[-1] if candles else None
+    return {
+        "ok": bool(candles),
+        "status": "LIVE_CANDLE_SYNCED" if candles else "NO_LIVE_CANDLE",
+        "provider": provider,
+        "source": source,
+        "timeframe": timeframe,
+        "completed_imported": imported,
+        "forming_candle": bool(latest and latest.get("is_partial")),
+        "last_candle": latest,
+        "synced_at": pd.Timestamp.now(tz="UTC").isoformat(),
+    }
 
 
 class LocalCandleBuilder:
@@ -1975,6 +2703,8 @@ class CandleHealthService:
 
     def _preferred_sources(self, timeframe: str) -> tuple[Optional[set[str]], str]:
         priority = [
+            (OANDA_HISTORY_SOURCE, {OANDA_HISTORY_SOURCE}),
+            (BINANCE_HISTORY_SOURCE, {BINANCE_HISTORY_SOURCE}),
             (TWELVE_DATA_HISTORY_SOURCE, {TWELVE_DATA_HISTORY_SOURCE}),
             (REAL_CSV_HISTORY_SOURCE, {REAL_CSV_HISTORY_SOURCE}),
             (USER_RECENT_CSV_SOURCE, {USER_RECENT_CSV_SOURCE}),

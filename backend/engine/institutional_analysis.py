@@ -4,27 +4,58 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from .asset_intelligence import AssetIntelligenceEngine
 from .pro_analysis import ProAnalysisEngineV3
 
 
 class InstitutionalAnalysisEngineV4(ProAnalysisEngineV3):
+    VERSION = AssetIntelligenceEngine.VERSION
+    asset_intelligence_engine = AssetIntelligenceEngine()
+
     def cache_snapshot(self) -> Dict[str, Any]:
         if not self.cache:
             return {"entries": 0, "keys": []}
         snap = self.cache.snapshot()
-        return {key: value for key, value in snap.items() if str(key).startswith("pro:v4:")}
+        return {key: value for key, value in snap.items() if str(key).startswith("pro:v5:")}
 
     def analyze(self, data_mode: Dict[str, Any], engine_mode: str = "balanced") -> Dict[str, Any]:
         result = super().analyze(data_mode, engine_mode)
+        asset_intelligence = self.asset_intelligence_engine.waiting(
+            self.symbol,
+            result.get("error") or "Complete MTF candle history is required.",
+        )
+        if result.get("analysis_ready"):
+            frames = self._frames(engine_mode, data_mode)
+            intended_direction = (
+                (result.get("trade_plan") or {}).get("direction")
+                or (result.get("signal") or {}).get("direction")
+            )
+            asset_intelligence = self._cached(
+                "asset_intelligence",
+                "5M",
+                lambda: self.asset_intelligence_engine.evaluate(self.symbol, frames, intended_direction),
+            )
+        result["asset_intelligence"] = asset_intelligence
+        self._apply_asset_intelligence_gate(result, asset_intelligence)
         result.update({
-            "version": "1.7.2",
-            "engine_core_version": "V4",
-            "engine_name": "Institutional Analysis Engine V4",
-            "project_name": "SH Gold Analyzer V1.7.2",
+            "version": "2.0.0",
+            "engine_core_version": "V5",
+            "engine_name": "Pro Analyze Engine V5 - Asset Intelligence",
+            "project_name": "SH Market Analyzer V3.7",
         })
         if "score_engine" in result:
             result["smart_score_v2"] = result["score_engine"]
+            result["smart_score_v2"]["asset_quality_score"] = asset_intelligence.get("quality_score", 0)
         if "workflow" in result:
+            pro_stage = self._stage(
+                "Asset Intelligence",
+                "VALID" if asset_intelligence.get("execution_gate") == "OPEN" else "WAITING",
+                int(asset_intelligence.get("quality_score") or 0),
+                asset_intelligence.get("reason") or "Waiting for asset-specific MTF context.",
+                "MTF",
+                [],
+            )
+            result["workflow"].insert(max(0, len(result["workflow"]) - 1), pro_stage)
             result["institutional_workflow"] = result["workflow"]
         explanation = self.analysis_explanation(result)
         result["analysis_explanation"] = explanation
@@ -33,7 +64,65 @@ class InstitutionalAnalysisEngineV4(ProAnalysisEngineV3):
             result["signal"]["data_mode_warning"] = explanation.get("data_mode_warning")
         return result
 
+    def _apply_asset_intelligence_gate(
+        self,
+        result: Dict[str, Any],
+        intelligence: Dict[str, Any],
+    ) -> None:
+        signal = result.get("signal") or {}
+        plan = result.get("trade_plan") or {}
+        gate = str(intelligence.get("execution_gate") or "OBSERVE")
+        gate_open = gate == "OPEN"
+        signal.update({
+            "pro_analyze_version": intelligence.get("version"),
+            "asset_profile": intelligence.get("profile"),
+            "asset_quality_score": intelligence.get("quality_score", 0),
+            "mtf_consensus": intelligence.get("consensus", "WAIT"),
+            "mtf_agreement_percent": intelligence.get("agreement_percent", 0),
+            "asset_execution_gate": gate,
+            "asset_context_ready": gate_open,
+        })
+
+        if gate_open:
+            return
+
+        reason = str(intelligence.get("reason") or "Asset-specific MTF context is not ready.")
+        next_trigger = str(intelligence.get("next_trigger") or reason)
+        signal["execution_allowed"] = False
+        signal["trade_plan_valid"] = False
+        warnings = list(signal.get("warnings") or [])
+        warning = f"Pro Analyze {gate}: {reason}"
+        if warning not in warnings:
+            warnings.append(warning)
+        signal["warnings"] = warnings
+        result["execution_allowed"] = False
+        result["trade_plan_valid"] = False
+
+        if plan.get("status") not in {"ACTIONABLE", "CANDIDATE"}:
+            return
+        was_actionable = plan.get("status") == "ACTIONABLE"
+        plan["status"] = "CANDIDATE"
+        plan["actionable"] = False
+        missing = list(plan.get("missing_conditions") or [])
+        condition = f"Pro Analyze: {next_trigger}"
+        if condition not in missing:
+            missing.insert(0, condition)
+        plan["missing_conditions"] = missing
+        plan["trigger"] = next_trigger
+        plan["asset_execution_gate"] = gate
+        plan["asset_quality_score"] = intelligence.get("quality_score", 0)
+        if was_actionable:
+            direction = str(plan.get("direction") or "WAIT").title()
+            order_type = str(plan.get("order_type") or "Setup").title()
+            label = f"Candidate {direction} {order_type} Setup"
+            plan["label"] = label
+            plan["action"] = f"Execution paused by {intelligence.get('profile')}: {reason}"
+            signal["status"] = label
+            result["market_state"] = label
+            result["final_decision"] = label
+
     def analysis_explanation(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = result.get("symbol") or self.symbol
         mode = result.get("data_mode")
         direction = result.get("signal", {}).get("direction") or "WAIT"
         decision = result.get("final_decision") or result.get("market_state") or "Waiting for Data"
@@ -44,6 +133,8 @@ class InstitutionalAnalysisEngineV4(ProAnalysisEngineV3):
         poi = result.get("poi_engine", {})
         confirmation = result.get("confirmation_engine", {})
         score = result.get("score_engine", {}).get("score", 0)
+        trade_plan = result.get("trade_plan") or {}
+        asset_intelligence = result.get("asset_intelligence") or {}
         warnings = result.get("data_mode_lock", {}).get("warnings", []) or result.get("signal", {}).get("warnings", [])
         if mode == "TEST_MODE":
             mode_warning = "TEST MODE: this is development analysis only, not a real market signal."
@@ -54,36 +145,80 @@ class InstitutionalAnalysisEngineV4(ProAnalysisEngineV3):
         elif mode == "REAL_MODE":
             mode_warning = None
         else:
-            mode_warning = "Waiting for complete XAUUSD data."
+            mode_warning = f"Waiting for complete {symbol} data."
 
-        if decision == "Test Mode Analysis":
-            summary = f"XAUUSD test history is loaded. The engine sees {bias} HTF bias and price in {location}, but the output is test-only."
+        if trade_plan:
+            entry = trade_plan.get("entry_price")
+            stop = trade_plan.get("stop_loss")
+            targets = trade_plan.get("take_profit_levels") or []
+            order_type = trade_plan.get("order_type") or "LIMIT"
+            plan_status = trade_plan.get("status") or "NO_VALID_SETUP"
+            missing_conditions = trade_plan.get("missing_conditions") or []
+            target_text = ", ".join(str(value) for value in targets[:2]) or "pending"
+            if plan_status == "NO_VALID_SETUP":
+                market_direction = trade_plan.get("market_direction") or bias
+                evidence_reason = trade_plan.get("zone_source") or "Required market-structure evidence is missing."
+                summary = f"{symbol} has no valid entry setup now. Market lean is {market_direction}. {evidence_reason} No synthetic prices were generated."
+            elif plan_status == "ACTIONABLE":
+                summary = f"Actionable {direction} {order_type} setup: entry {entry}, stop {stop}, targets {target_text}, score {score}."
+            else:
+                missing_text = ", ".join(missing_conditions[:3]) or "risk validation"
+                summary = f"Evidence-backed {direction} {order_type} candidate: entry {entry}, stop {stop}, targets {target_text}. Not active: {missing_text}."
+        elif decision == "Test Mode Analysis":
+            summary = f"{symbol} test history is loaded. The engine sees {bias} HTF bias and price in {location}, but the output is test-only."
         elif decision == "Live Only":
-            summary = "XAUUSD live price is available, but full 1D/4H/1H/15M/5M candle history is not ready."
+            summary = f"{symbol} live price is available, but full 1D/4H/1H/15M/5M candle history is not ready."
         elif decision.startswith("Waiting"):
-            summary = f"XAUUSD is {bias} on HTF. Price is in {location}, so the engine is {decision.lower()}."
+            summary = f"{symbol} is {bias} on HTF. Price is in {location}, so the engine is {decision.lower()}."
         elif "Setup" in decision:
-            summary = f"XAUUSD has a {decision.lower()} with score {score}. Direction is {direction} after POI and 5M confirmation checks."
+            summary = f"{symbol} has a {decision.lower()} with score {score}. Direction is {direction} after POI and 5M confirmation checks."
         elif decision == "No Trade":
-            summary = f"XAUUSD has no real setup. HTF bias is {bias}, liquidity sweep is {bool(liquidity.get('liquidity_sweep'))}, POI ready is {bool(poi.get('best_poi'))}, and 5M confirmation is {bool(confirmation.get('confirmation_ready'))}."
+            summary = f"{symbol} has no real setup. HTF bias is {bias}, liquidity sweep is {bool(liquidity.get('liquidity_sweep'))}, POI ready is {bool(poi.get('best_poi'))}, and 5M confirmation is {bool(confirmation.get('confirmation_ready'))}."
         else:
-            summary = result.get("error") or "XAUUSD analysis is waiting for usable candle data."
+            summary = result.get("error") or f"{symbol} analysis is waiting for usable candle data."
 
+        if asset_intelligence.get("status") in {"READY", "PARTIAL"}:
+            summary = (
+                f"{summary} Pro Analyze {asset_intelligence.get('profile')} reports "
+                f"{asset_intelligence.get('consensus')} MTF consensus at "
+                f"{asset_intelligence.get('agreement_percent', 0)}% agreement; "
+                f"gate {asset_intelligence.get('execution_gate')}."
+            )
+
+        waiting_condition = (
+            trade_plan.get("trigger")
+            if trade_plan and trade_plan.get("status") != "ACTIONABLE"
+            else self._waiting_condition(decision, liquidity, poi, confirmation)
+        )
+        invalidation_condition = (
+            f"Setup is invalidated beyond {trade_plan.get('stop_loss')}."
+            if trade_plan.get("stop_loss") is not None
+            else "No invalidation level because no valid setup is active."
+        )
+        next_trigger = (
+            trade_plan.get("trigger")
+            if trade_plan
+            else self._next_trigger(decision)
+        )
         return {
             "direction": direction,
             "summary": summary,
             "reason": result.get("signal", {}).get("final_action") or decision,
-            "waiting_condition": self._waiting_condition(decision, liquidity, poi, confirmation),
-            "invalidation_condition": self._invalidation_condition(result),
-            "next_trigger": self._next_trigger(decision),
+            "waiting_condition": waiting_condition,
+            "invalidation_condition": invalidation_condition,
+            "next_trigger": next_trigger,
             "confidence": result.get("score_engine", {}).get("score", result.get("signal", {}).get("score", 0)),
             "data_mode_warning": mode_warning,
             "warnings": warnings,
         }
 
     def _cached(self, name: str, dependency_tf: str, builder):
-        dependency = self.store.latest_timestamp_for_sources(dependency_tf, self._active_sources) if self._active_sources else self.store.latest_any_timestamp(dependency_tf)
-        key = f"pro:v4.1:{self._active_source_label}:{name}:{dependency_tf}"
+        dependency = (
+            self.store.latest_timestamp_for_sources(dependency_tf, self._active_sources, completed_only=True)
+            if self._active_sources
+            else self.store.latest_any_timestamp(dependency_tf, completed_only=True)
+        )
+        key = f"pro:v5.0:{self.symbol}:{self._active_source_label}:{name}:{dependency_tf}"
         if self.cache:
             cached = self.cache.get(key, dependency)
             if cached:
@@ -214,17 +349,18 @@ class InstitutionalAnalysisEngineV4(ProAnalysisEngineV3):
             self._stage("POI Detection", "VALID" if poi.get("best_poi") else "WAITING", poi["confidence"], poi["reason"], "15M", [poi["best_poi"]] if poi.get("best_poi") else []),
             self._stage("Confirmation", "VALID" if confirmation.get("confirmation_ready") else "WAITING", confirmation["confidence"], confirmation["reason"], "5M", []),
             self._stage("Setup Quality Score", "VALID" if score["score"] >= 75 else "WEAK", score["score"], score["score_result"], "All", []),
-            self._stage("Final Decision", "VALID" if "Setup" in decision else "WAITING" if decision.startswith("Waiting") else "INFO", score["score"], decision, "All", []),
+            self._stage("Final Decision", "VALID" if decision.startswith("Actionable") else "WAITING" if decision.startswith(("Waiting", "Candidate", "No Valid")) else "INFO", score["score"], decision, "All", []),
         ]
 
     def _blocked(self, decision: str, locked_mode: str, data_mode: Dict[str, Any], counts: Dict[str, int], reason: str, current_price: Optional[float] = None, missing: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
         result = super()._blocked(decision, locked_mode, data_mode, counts, reason, current_price, missing)
         result.update({
-            "version": "1.7.2",
-            "engine_core_version": "V4",
-            "engine_name": "Institutional Analysis Engine V4",
+            "version": "2.0.0",
+            "engine_core_version": "V5",
+            "engine_name": "Pro Analyze Engine V5 - Asset Intelligence",
             "smart_score_v2": result.get("score_engine", {"score": 0, "score_result": "Waiting"}),
         })
+        result["asset_intelligence"] = self.asset_intelligence_engine.waiting(self.symbol, reason)
         return result
 
     def _previous_week_levels(self, df: Optional[pd.DataFrame]) -> tuple[Optional[float], Optional[float]]:

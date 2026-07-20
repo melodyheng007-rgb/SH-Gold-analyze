@@ -33,25 +33,7 @@ const DEFINITIONS = [
     id: 'chart.tradingview',
     label: 'TradingView Live',
     group: 'Chart',
-    description: 'Show the TradingView live reference chart.',
-  },
-  {
-    id: 'chart.analysis',
-    label: 'SH Analysis',
-    group: 'Chart',
-    description: 'Show the internal SH analysis candle chart.',
-  },
-  {
-    id: 'chart.split',
-    label: 'Split View',
-    group: 'Chart',
-    description: 'Show TradingView and SH analysis together.',
-  },
-  {
-    id: 'chart.resetScale',
-    label: 'Reset Scale',
-    group: 'Chart',
-    description: 'Reset chart zoom and price scale.',
+    description: 'Show the TradingView chart for the selected market.',
   },
   {
     id: 'data.hub',
@@ -75,32 +57,11 @@ const DEFINITIONS = [
     enabled: state => !state.actionsDisabled,
   },
   {
-    id: 'data.generateTestHistory',
-    label: 'Generate Test History',
-    group: 'Data',
-    description: 'Generate clearly marked test candles for development.',
-    enabled: state => !state.actionsDisabled,
-  },
-  {
-    id: 'data.clearTestHistory',
-    label: 'Clear Test History',
-    group: 'Data',
-    description: 'Remove generated test candles.',
-    enabled: state => !state.actionsDisabled,
-  },
-  {
     id: 'data.liveOnlyMode',
     label: 'Live Only Mode',
     group: 'Data',
     description: 'Use live price only and disable full real analysis.',
     enabled: state => !state.actionsDisabled,
-  },
-  {
-    id: 'analysis.analyze',
-    label: 'Analyze',
-    group: 'Analysis',
-    description: 'Run the institutional analysis engine.',
-    enabled: state => !state.analyzeDisabled,
   },
   {
     id: 'analysis.smartSetup',
@@ -124,22 +85,16 @@ const DEFINITIONS = [
     enabled: state => !state.actionsDisabled,
   },
   {
-    id: 'system.debug',
-    label: 'Debug',
-    group: 'System',
-    description: 'Open debug data and route checks.',
-  },
-  {
     id: 'system.backendHealth',
-    label: 'Backend Health',
+    label: 'Refresh Services',
     group: 'System',
-    description: 'Refresh backend health and data status.',
+    description: 'Refresh market services and current data status.',
   },
   {
     id: 'system.clearLocalStorage',
-    label: 'Clear Local Storage',
+    label: 'Reset App Data',
     group: 'System',
-    description: 'Clear local browser state and reload the app.',
+    description: 'Reset saved preferences and reload the workspace.',
   },
 ]
 

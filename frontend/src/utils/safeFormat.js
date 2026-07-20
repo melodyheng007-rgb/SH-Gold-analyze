@@ -4,6 +4,7 @@ export function safeNumber(value, fallback = '-') {
 }
 
 export function safePrice(value, decimals = 2) {
+  if (value === null || value === undefined || value === '') return '-'
   const number = Number(value)
   return Number.isFinite(number) ? number.toFixed(decimals) : '-'
 }
