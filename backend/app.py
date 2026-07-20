@@ -374,6 +374,7 @@ def api_health():
     btc_info = btc_candle_store.database_info()
     provider_status = live_builder.status()
     locked = _locked_data_mode()
+    oanda_configured = bool(settings.get("oanda_api_token"))
     return {
         "status": "OK",
         "app": "SH Market Analyzer",
@@ -392,6 +393,17 @@ def api_health():
         "provider_status": provider_status.get("status"),
         "backend_status": "ONLINE",
         "authentication": auth_guard.status(),
+        "market_feed": {
+            "oanda_configured": oanda_configured,
+            "oanda_environment": settings.get("oanda_environment") or "practice",
+            "restore_status": oanda_restore_state.get("status"),
+            "restore_running": bool(oanda_restore_state.get("running")),
+            "restore_message": oanda_restore_state.get("message"),
+            "source_by_timeframe": {
+                timeframe: candle_store.source_summary(timeframe)
+                for timeframe in ["5M", "15M", "1H", "4H", "1D"]
+            },
+        },
         "data_mode": locked.get("locked_mode"),
         "data_mode_label": locked.get("data_mode_label"),
         "timestamp": pd.Timestamp.now(tz="UTC").isoformat(),
