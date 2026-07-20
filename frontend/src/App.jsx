@@ -2363,9 +2363,17 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
   const [dockTab, setDockTab] = useState('setup')
   const [dockCollapsed, setDockCollapsed] = useState(true)
   const [replayEntry, setReplayEntry] = useState(null)
-  const candles = useMemo(() => signalViewCandles(chartData, asset), [chartData, asset])
-  const levels = useMemo(() => deriveSignalViewLevels(candles, overlays, analysis, sessionFramework, keyZones), [candles, overlays, analysis, sessionFramework, keyZones])
+  const feedTrusted = providerAlignment?.matched !== false
+  const candles = useMemo(
+    () => feedTrusted ? signalViewCandles(chartData, asset) : [],
+    [chartData, asset, feedTrusted],
+  )
+  const levels = useMemo(
+    () => feedTrusted ? deriveSignalViewLevels(candles, overlays, analysis, sessionFramework, keyZones) : [],
+    [candles, overlays, analysis, sessionFramework, keyZones, feedTrusted],
+  )
   const diamondContextZones = useMemo(() => {
+    if (!feedTrusted) return []
     const primary = safeObject(keyZones?.primary_zone)
     const visibleDiamondFloor = diamondVisibleFloor(keyZones, primary)
     const sourceZones = Array.isArray(keyZones?.visible_zones) ? keyZones.visible_zones : safeArray(keyZones?.zones)
@@ -2379,17 +2387,17 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     const remaining = visible.filter(zone => zone.id !== visiblePrimary?.id)
     const zones = visiblePrimary ? [visiblePrimary, ...remaining] : visible
     return zones.slice(0, 14).map(zone => ({ ...zone, isPrimary: zone.id === primary.id }))
-  }, [keyZones])
+  }, [keyZones, feedTrusted])
   const diamondEntryEvents = useMemo(
-    () => safeArray(keyZones?.entry_events)
+    () => feedTrusted ? safeArray(keyZones?.entry_events)
       .filter(event => (
         event?.id
         && Number(event.diamond_score ?? event.quality_score ?? 0) >= 60
         && Number.isFinite(Number(event.time))
         && Number.isFinite(Number(event.marker_price ?? event.line))
       ))
-      .slice(-4),
-    [keyZones],
+      .slice(-4) : [],
+    [keyZones, feedTrusted],
   )
   const persistedDiamondMarkers = useMemo(
     () => derivePersistedDiamondMarkers(candles, diamondHistory, timeframe),
@@ -2424,7 +2432,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     : diamondContextZones[0] || null
   levelsRef.current = levels
   diamondContextZonesRef.current = diamondContextZones
-  const panelData = safeObject(panels?.indicator_panels)
+  const panelData = feedTrusted ? safeObject(panels?.indicator_panels) : {}
   const indicatorSnapshot = deriveIndicatorSnapshot(panelData)
   const macdSnapshot = safeObject(indicatorSnapshot.macd)
   const rsiSnapshot = safeObject(indicatorSnapshot.rsi)
@@ -2433,13 +2441,15 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
   const candleAudit = safeObject(liveSync?.history_provenance?.audit)
   const decisionQuality = safeObject(analysis?.decision_quality)
   const newsEvent = safeObject(newsIntelligence?.primary_event)
-  const decision = newsIntelligence?.execution_gate === 'BLOCK_NEW_ENTRIES'
+  const decision = !feedTrusted
+    ? 'Waiting for Matched Data'
+    : newsIntelligence?.execution_gate === 'BLOCK_NEW_ENTRIES'
     ? `News Lock - ${newsEvent.title || 'High Impact Event'}`
     : decisionQualityLabel(decisionQuality.status) || analysis?.final_decision || 'Waiting for Analysis'
   const readiness = safeObject(decisionQuality.execution_readiness)
   const primaryBlocker = safeObject(decisionQuality.primary_blocker || readiness.current_gate)
   const locationGuard = safeObject(decisionQuality.location_guard || analysis?.market_regime?.location_guard)
-  const nextGate = readiness.next_gate_label || primaryBlocker.label || 'Engine Diagnostics'
+  const nextGate = !feedTrusted ? 'Data Trust' : readiness.next_gate_label || primaryBlocker.label || 'Engine Diagnostics'
   const timeframeSwitching = Boolean(timeframeTransition?.active && timeframeTransition?.target === timeframe)
   const timeframeTransitionLabel = timeframeTransition?.phase === 'analysis'
     ? `Updating ${timeframeLabel(timeframe)} setup`
@@ -2734,7 +2744,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
       {!providerAlignment?.matched && (
         <div className="signal-feed-warning">
           <strong>UNMATCHED FEED</strong>
-          <span>{liveSync?.source || 'Fallback history'} differs from {providerAlignment?.visual_symbol || MARKET_ASSETS[asset]?.tradingViewSymbol}. Analysis is fallback-only.</span>
+          <span>{liveSync?.source || 'Fallback history'} differs from {providerAlignment?.visual_symbol || MARKET_ASSETS[asset]?.tradingViewSymbol}. The chart and analysis remain locked.</span>
         </div>
       )}
       <DiamondStatusBar

@@ -87,9 +87,10 @@ MARKET_VISUAL_SYMBOLS = {
     "BTCUSD": "BINANCE:BTCUSDT",
 }
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-SAMPLE_CSV = os.path.join(DATA_DIR, "sample_xauusd_m5.csv")
-HISTORY_DIR = os.path.join(DATA_DIR, "xauusd_history")
+BUNDLED_DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.abspath(os.getenv("SH_DATA_DIR") or BUNDLED_DATA_DIR)
+SAMPLE_CSV = os.path.join(BUNDLED_DATA_DIR, "sample_xauusd_m5.csv")
+HISTORY_DIR = os.path.join(BUNDLED_DATA_DIR, "xauusd_history")
 RECENT_HISTORY_DIR = os.path.join(DATA_DIR, "xauusd_recent_history")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 UPLOAD_CSV = os.path.join(UPLOAD_DIR, "xauusd_latest_upload.csv")
@@ -2199,6 +2200,10 @@ def _sync_live_visual_analysis_history_unlocked() -> Dict[str, Any]:
         }
     if sync.get("ok"):
         active_source = sync.get("source") or TWELVE_DATA_HISTORY_SOURCE
+        if active_source == OANDA_HISTORY_SOURCE:
+            archived = candle_store.archive_sources({PRELOADED_SOURCE, WARMUP_SOURCE})
+            sync["stale_history_archived"] = archived
+            sync["stale_history_archived_total"] = sum(archived.values())
         latest = candle_store.latest_candle_for_sources("5M", {active_source}) or {}
         candle_store.save_status(GoldAPIStatus(
             status="LIVE",
@@ -2230,6 +2235,10 @@ def _sync_btc_visual_analysis_history() -> Dict[str, Any]:
         }
     if sync.get("ok"):
         active_source = sync.get("source") or TWELVE_DATA_HISTORY_SOURCE
+        if active_source == BINANCE_HISTORY_SOURCE:
+            archived = btc_candle_store.archive_sources({PRELOADED_SOURCE, WARMUP_SOURCE})
+            sync["stale_history_archived"] = archived
+            sync["stale_history_archived_total"] = sum(archived.values())
         latest = btc_candle_store.latest_candle_for_sources("5M", {active_source}) or {}
         btc_candle_store.save_status(GoldAPIStatus(
             status="LIVE",

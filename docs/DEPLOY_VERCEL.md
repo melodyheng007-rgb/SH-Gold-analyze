@@ -54,11 +54,14 @@ AUTH_REQUIRED=true
 SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_REPLACE_ME
 CORS_ORIGINS=https://YOUR-APP.vercel.app
+OANDA_API_TOKEN=YOUR_SERVER_SIDE_OANDA_TOKEN
+OANDA_ENVIRONMENT=live
+SH_DATA_DIR=/data
 ```
 
 For local testing, copy `backend/.env.example` to `backend/.env` and replace the example values. Real hosting variables override values from the local file.
 
-Deploy the backend with a persistent disk for `backend/data/`. Confirm that `https://YOUR-API/api/health` returns `authentication.required: true` and `authentication.configured: true`.
+On Railway, add a Volume mounted at `/data`; `SH_DATA_DIR=/data` makes candle, provider, journal, and preserved Diamond history survive every redeploy. Confirm that `https://YOUR-API/api/health` returns `authentication.required: true` and `authentication.configured: true`.
 
 Assign `app_metadata.role = admin` only to trusted owner accounts using a trusted Supabase admin surface. Regular users remain `user` and cannot access provider credentials, diagnostics, test-data controls, or destructive market-data actions. Never use editable `user_metadata` for authorization.
 
