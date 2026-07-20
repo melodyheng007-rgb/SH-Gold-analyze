@@ -113,6 +113,16 @@ class ProviderAlignmentTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "OANDA_TOKEN_MISSING")
 
+    def test_oanda_history_reports_rejected_token_without_exposing_it(self) -> None:
+        self.settings.update({"oanda_api_token": "private-test-token", "oanda_environment": "live"})
+        service = OandaHistoryService(self.settings, self.store)
+        with patch.object(service, "_fetch_timeframe", side_effect=RuntimeError("401 Client Error: Unauthorized")):
+            result = service.sync_recent_history(["5M"])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["message"], "OANDA rejected the access token for the selected environment.")
+        self.assertNotIn("private-test-token", str(result))
+
     def test_oanda_verification_checks_xau_candles_without_echoing_token(self) -> None:
         payload = {
             "candles": [

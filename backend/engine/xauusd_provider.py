@@ -1259,6 +1259,15 @@ class OandaHistoryService:
                 latest[tf] = candles[-1]["timestamp"] if candles else None
             except Exception as exc:
                 errors[tf] = str(exc)
+        error_text = " ".join(errors.values()).lower()
+        if "401" in error_text or "unauthorized" in error_text:
+            message = "OANDA rejected the access token for the selected environment."
+        elif "403" in error_text or "forbidden" in error_text:
+            message = "OANDA denied candle access for the selected environment."
+        elif errors:
+            message = "OANDA candle history could not be synchronized."
+        else:
+            message = "OANDA candle history synchronized."
         return {
             "ok": not errors and bool(imported),
             "status": "OANDA_HISTORY_SYNCED" if imported else "OANDA_NO_HISTORY",
@@ -1269,6 +1278,7 @@ class OandaHistoryService:
             "imported": imported,
             "latest": latest,
             "errors": errors,
+            "message": message,
             "candle_counts": self.store.counts(),
             "dns_recovery": bool(getattr(self._transport_state, "dns_recovery", False)),
         }
