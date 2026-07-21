@@ -79,6 +79,11 @@ class SupabaseAuthGuard:
         ).strip()
         self.configured = bool(self.supabase_url and self.publishable_key)
         self.local_owner_mode = _enabled(os.getenv("SH_LOCAL_OWNER_MODE"))
+        self.admin_emails = {
+            email.strip().lower()
+            for email in str(os.getenv("ADMIN_EMAILS") or "").split(",")
+            if email.strip()
+        }
         self._session = requests.Session()
         self._cache: OrderedDict[str, tuple[float, Dict[str, Any]]] = OrderedDict()
         self._cache_lock = threading.Lock()
@@ -96,7 +101,7 @@ class SupabaseAuthGuard:
 
     def permits_local_owner(self, client_host: Optional[str]) -> bool:
         """Allow an authenticated local developer to manage feed credentials."""
-        if not self.local_owner_mode:
+        if not self.local_owner_mode or self.admin_emails:
             return False
         host = str(client_host or "").strip().strip("[]")
         if host.lower() == "localhost":
@@ -145,12 +150,16 @@ class SupabaseAuthGuard:
         if not user.get("id"):
             raise AuthGuardError("INVALID_SESSION", 401, "Your session is invalid or expired. Please sign in again.")
 
+        email = str(user.get("email") or "").strip().lower()
+        metadata_role = str((user.get("app_metadata") or {}).get("role") or "user").lower()
+        app_role = "admin" if metadata_role == "admin" or email in self.admin_emails else "user"
         public_user = {
             "id": user.get("id"),
-            "email": user.get("email"),
+            "email": email,
             "role": user.get("role") or "authenticated",
             "aud": user.get("aud") or "authenticated",
-            "app_role": str((user.get("app_metadata") or {}).get("role") or "user").lower(),
+            "app_role": app_role,
+            "is_admin": app_role == "admin",
         }
         with self._cache_lock:
             self._cache[cache_key] = (now + self._cache_seconds, public_user)
@@ -165,4 +174,5 @@ class SupabaseAuthGuard:
             "configured": self.configured,
             "provider": "SUPABASE" if self.configured else "NOT_CONFIGURED",
             "local_owner_mode": self.local_owner_mode,
+            "admin_policy_configured": bool(self.admin_emails),
         }

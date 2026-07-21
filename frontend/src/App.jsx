@@ -4614,9 +4614,8 @@ function MobileMenuDrawer({
   onClearLocalStorage = () => {},
   asset = 'XAUUSD',
 }) {
-  const { user } = useAuth()
-  const isAdmin = user?.app_metadata?.role === 'admin'
-  const canManageFeed = isAdmin || import.meta.env.DEV
+  const { isAdmin } = useAuth()
+  const canManageFeed = isAdmin
   const [settingsGroup, setSettingsGroup] = useState('Analysis')
   const oandaCredentialState = status?.settings?.oanda_credential_state || (status?.settings?.oanda_api_token ? 'SAVED' : 'NOT_CONFIGURED')
   const oandaCredentialSaved = Boolean(status?.settings?.oanda_api_token)
@@ -4859,7 +4858,7 @@ function SplitChartView({ liveProps, analysisProps, sourceBadge }) {
 }
 
 export default function App() {
-  const { user } = useAuth()
+  const { user, isAdmin } = useAuth()
   const initialViewRef = useRef(null)
   if (initialViewRef.current === null) {
     const initialAsset = getSavedAsset()
@@ -4878,7 +4877,6 @@ export default function App() {
     : safeArray(initialView.snapshot?.chart_data?.candles)
   const initialLatestPrice = initialView.snapshot?.chart_data?.latest_live_price
     ?? initialChartCandles.at(-1)?.close
-  const isAdmin = user?.app_metadata?.role === 'admin'
   const [status, setStatus] = useState(() => initialView.snapshot ? ({
     status: 'RESTORED_SNAPSHOT',
     latest_price: initialLatestPrice,

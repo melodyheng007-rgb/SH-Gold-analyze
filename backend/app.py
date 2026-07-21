@@ -443,6 +443,17 @@ def api_health():
     }
 
 
+@app.get("/api/auth/me")
+def api_auth_me(request: Request):
+    user = dict(getattr(request.state, "auth_user", {}) or {})
+    return {
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "app_role": user.get("app_role") or "user",
+        "is_admin": user.get("app_role") == "admin",
+    }
+
+
 @app.get("/api/routes")
 def api_routes():
     routes = []
@@ -983,14 +994,18 @@ def xauusd_debug_data():
 
 
 @app.get("/api/xauusd/provider-status")
-def xauusd_provider_status():
-    return live_builder.status() | {
-        "settings": settings.masked_status(),
-        "oanda_restore": dict(oanda_restore_state),
-        "provider_restore": dict(oanda_restore_state),
+def xauusd_provider_status(request: Request):
+    result = live_builder.status() | {
         "minimum_required": MIN_ANALYSIS_CANDLES,
         "data_readiness": xauusd_data_readiness(),
     }
+    if getattr(request.state, "auth_user", {}).get("app_role") == "admin":
+        result.update({
+            "settings": settings.masked_status(),
+            "oanda_restore": dict(oanda_restore_state),
+            "provider_restore": dict(oanda_restore_state),
+        })
+    return result
 
 
 @app.get("/api/xauusd/provider-credentials")

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { setApiAccessToken } from '../services/apiClient.js'
+import { apiRequest, setApiAccessToken } from '../services/apiClient.js'
 import {
   authConfigured,
   authRedirectUrl,
@@ -19,6 +19,7 @@ function recoveryRequested() {
 
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
+  const [accountProfile, setAccountProfile] = useState(null)
   const [loading, setLoading] = useState(authConfigured)
   const [passwordRecovery, setPasswordRecovery] = useState(recoveryRequested)
   const [authDialogOpen, setAuthDialogOpen] = useState(false)
@@ -31,17 +32,40 @@ export function AuthProvider({ children }) {
     }
 
     let active = true
-    supabase.auth.getSession().then(({ data, error }) => {
+    const applySession = async nextSession => {
       if (!active) return
-      setSession(error ? null : data.session)
-      setApiAccessToken(error ? '' : data.session?.access_token)
+      setSession(nextSession)
+      setApiAccessToken(nextSession?.access_token)
       setLoading(false)
+      if (!nextSession) {
+        setAccountProfile(null)
+        return
+      }
+      const metadataRole = String(nextSession.user?.app_metadata?.role || 'user').toLowerCase()
+      setAccountProfile({
+        app_role: metadataRole,
+        is_admin: metadataRole === 'admin',
+      })
+      try {
+        const profile = await apiRequest('/api/auth/me', { timeoutMs: 6000 })
+        if (active) setAccountProfile(profile)
+      } catch (_) {
+        if (active) {
+          setAccountProfile({
+            app_role: metadataRole,
+            is_admin: metadataRole === 'admin',
+          })
+        }
+      }
+    }
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      applySession(error ? null : data.session)
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return
-      setSession(nextSession)
-      setApiAccessToken(nextSession?.access_token)
+      applySession(nextSession)
       if (nextSession) setAuthDialogOpen(false)
       if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
       if (event === 'SIGNED_OUT') setPasswordRecovery(false)
@@ -140,17 +164,26 @@ export function AuthProvider({ children }) {
     },
   }), [])
 
-  const value = useMemo(() => ({
-    configured: authConfigured,
-    required: authRequired,
-    enabled: authConfigured,
-    loading,
-    session,
-    user: session?.user || null,
-    passwordRecovery,
-    authDialogOpen,
-    ...actions,
-  }), [actions, authDialogOpen, loading, passwordRecovery, session])
+  const value = useMemo(() => {
+    const appRole = String(
+      accountProfile?.app_role
+      || session?.user?.app_metadata?.role
+      || 'user'
+    ).toLowerCase()
+    return {
+      configured: authConfigured,
+      required: authRequired,
+      enabled: authConfigured,
+      loading,
+      session,
+      user: session?.user || null,
+      appRole,
+      isAdmin: appRole === 'admin',
+      passwordRecovery,
+      authDialogOpen,
+      ...actions,
+    }
+  }, [accountProfile, actions, authDialogOpen, loading, passwordRecovery, session])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
