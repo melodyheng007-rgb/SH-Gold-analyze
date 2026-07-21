@@ -66,11 +66,35 @@ class ClosedCandleAlertsTests(unittest.TestCase):
         self.assertIsNone(self.alerts.record(unmatched, "15M"))
         waiting = analysis("waiting")
         waiting["key_zones"]["entry_event_status"] = "WAITING_CONFIRMATION"
+        waiting["key_zones"]["latest_entry_event"] = None
         self.assertIsNone(self.alerts.record(waiting, "15M"))
         historical = analysis("historical")
         historical["decision_quality"]["current_event"] = False
         self.assertIsNone(self.alerts.record(historical, "15M"))
         self.assertEqual(self.alerts.list("XAUUSD")["stats"]["total"], 0)
+
+    def test_records_grade_b_lead_diamond_approach_once(self):
+        waiting = analysis("waiting")
+        waiting["key_zones"].update({
+            "entry_event_status": "WAITING_CONFIRMATION",
+            "latest_entry_event": None,
+            "lead_diamond_zone": {
+                "id": "zone-approach",
+                "time": 1_700_000_000,
+                "entry_side": "SELL",
+                "line": 4105.0,
+                "distance_atr": 0.8,
+                "diamond_score": 76,
+            },
+        })
+        waiting["decision_quality"]["current_event"] = False
+
+        first = self.alerts.record(waiting, "5M")
+        second = self.alerts.record(waiting, "5M")
+
+        self.assertEqual(first["kind"], "DIAMOND_ZONE_APPROACH")
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(self.alerts.list("XAUUSD")["stats"]["total"], 1)
 
 
 if __name__ == "__main__":

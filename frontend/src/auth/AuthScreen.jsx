@@ -226,7 +226,7 @@ export function AuthScreen({ recovery = false, onClose = null }) {
     <main className="auth-screen">
       <section className="auth-brand" aria-label="SH Market Analyzer">
         <div className="auth-brand-mark"><Diamond size={26} /></div>
-        <div><span>SH MARKET ANALYZER</span><strong>Diamond Discovery</strong></div>
+        <div><span>SH MARKET ANALYZER V3.8</span><strong>Adaptive Diamond</strong></div>
       </section>
 
       <section className="auth-panel">

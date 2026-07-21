@@ -1,16 +1,16 @@
 @echo off
 setlocal EnableExtensions
-title SH Market Analyzer V3.7 - Frontend
+title SH Market Analyzer V3.8 - Frontend
 cd /d "%~dp0frontend"
 
 set "FRONTEND_URL=http://127.0.0.1:5173"
 
 echo.
 echo =====================================================
-echo   SH Market Analyzer V3.7 - Frontend Launcher
+echo   SH Market Analyzer V3.8 - Frontend Launcher
 echo =====================================================
 
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $response=Invoke-WebRequest -Uri '%FRONTEND_URL%' -UseBasicParsing -TimeoutSec 3; if ($response.StatusCode -eq 200 -and $response.Content -match 'SH Market Analyzer V3.7') { Write-Host '[ONLINE] SH Frontend is already running.'; exit 0 }; exit 1"
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $response=Invoke-WebRequest -Uri '%FRONTEND_URL%' -UseBasicParsing -TimeoutSec 3; if ($response.StatusCode -eq 200 -and $response.Content -match 'SH Market Analyzer V3.8') { Write-Host '[ONLINE] SH Frontend is already running.'; exit 0 }; exit 1"
 if not errorlevel 1 (
   if /I not "%SH_NO_BROWSER%"=="1" (
     echo Opening %FRONTEND_URL% ...

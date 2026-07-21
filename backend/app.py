@@ -79,8 +79,8 @@ from engine.xauusd_provider import (
     normalize_timeframe,
 )
 
-APP_VERSION = "3.7.0"
-APP_VERSION_LABEL = "V3.7"
+APP_VERSION = "3.8.0"
+APP_VERSION_LABEL = "V3.8"
 APP_DESCRIPTION = "Diamond Discovery Trading OS"
 MARKET_VISUAL_SYMBOLS = {
     "XAUUSD": "OANDA:XAUUSD",

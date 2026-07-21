@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 
 class ClosedCandleAlerts:
-    """Deduplicated in-app alerts created only from confirmed completed-candle events."""
+    """Deduplicated lifecycle alerts created only from trusted completed-candle analysis."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
@@ -55,49 +55,82 @@ class ClosedCandleAlerts:
         symbol = str(analysis.get("symbol") or analysis.get("market_symbol") or "XAUUSD").upper()
         normalized_timeframe = str(timeframe or "15M").upper()
         zones = analysis.get("key_zones") or {}
-        event = zones.get("latest_entry_event") or {}
         reconciliation = analysis.get("feed_reconciliation") or {}
         decision_quality = analysis.get("decision_quality") or {}
-        if (
-            zones.get("entry_event_status") != "CONFIRMED_ENTRY"
-            or reconciliation.get("trusted") is not True
-            or decision_quality.get("current_event") is not True
-        ):
+        if reconciliation.get("trusted") is not True:
             return None
-        event_id = str(event.get("id") or "")
-        event_time = self._integer(event.get("confirmation_time") or event.get("available_at") or event.get("time"))
-        if not event_id or event_time is None:
-            return None
-        side = str(event.get("entry_side") or "WAIT").upper()
         auto_entry = analysis.get("diamond_auto_entry") or {}
         execution = analysis.get("execution_reality") or {}
         news = analysis.get("news_intelligence") or {}
-        if news.get("execution_gate") == "BLOCK_NEW_ENTRIES":
-            kind, priority = "DIAMOND_NEWS_LOCKED", "HOLD"
-            title = f"{side.title()} Diamond confirmed - News lock"
-        elif auto_entry.get("status") == "AUTO_ARMED" and execution.get("research_trackable") is True:
-            kind, priority = "TRACKABLE_DIAMOND_SETUP", "ACTION"
-            title = f"Trackable {side.title()} Diamond"
+        confirmed = bool(
+            zones.get("entry_event_status") == "CONFIRMED_ENTRY"
+            and decision_quality.get("current_event") is True
+        )
+        event = zones.get("latest_entry_event") or {}
+        transition = "CONFIRMED"
+        if confirmed:
+            side = str(event.get("entry_side") or "WAIT").upper()
+            if news.get("execution_gate") == "BLOCK_NEW_ENTRIES":
+                kind, priority = "DIAMOND_NEWS_LOCKED", "HOLD"
+                title = f"{side.title()} Diamond confirmed - News lock"
+            elif auto_entry.get("status") == "AUTO_ARMED" and execution.get("research_trackable") is True:
+                kind, priority = "TRACKABLE_DIAMOND_SETUP", "ACTION"
+                title = f"Trackable {side.title()} Diamond"
+            else:
+                kind, priority = "DIAMOND_CONFIRMED_RESEARCH", "WATCH"
+                title = f"{side.title()} Diamond confirmed"
         else:
-            kind, priority = "DIAMOND_CONFIRMED_RESEARCH", "WATCH"
-            title = f"{side.title()} Diamond confirmed"
+            lead = zones.get("lead_diamond_zone") or {}
+            invalidated = next((
+                item for item in reversed(zones.get("zones") or [])
+                if str(item.get("lifecycle") or "").upper() in {"INVALIDATED", "FLIPPED"}
+                or str(item.get("entry_stage") or "").upper() == "INVALIDATED"
+            ), None)
+            lead_score = self._number(lead.get("diamond_score") or lead.get("diamond_confidence_score")) or 0
+            if lead and lead_score >= 70 and news.get("execution_gate") == "BLOCK_NEW_ENTRIES":
+                event = lead
+                transition = "NEWS_LOCK"
+                side = str(lead.get("entry_side") or ("BUY" if lead.get("direction") == "BULLISH" else "SELL")).upper()
+                kind, priority = "DIAMOND_NEWS_LOCKED", "HOLD"
+                title = f"{side.title()} Diamond paused by news"
+            elif lead and lead_score >= 70 and (self._number(lead.get("distance_atr")) or 99) <= 1.25:
+                event = lead
+                transition = "APPROACH"
+                side = str(lead.get("entry_side") or ("BUY" if lead.get("direction") == "BULLISH" else "SELL")).upper()
+                kind, priority = "DIAMOND_ZONE_APPROACH", "WATCH"
+                title = f"Price approaching {side.title()} Diamond"
+            elif invalidated:
+                event = invalidated
+                transition = "INVALIDATED"
+                side = str(invalidated.get("entry_side") or ("BUY" if invalidated.get("direction") == "BULLISH" else "SELL")).upper()
+                kind, priority = "DIAMOND_INVALIDATED", "HOLD"
+                title = f"{side.title()} Diamond invalidated"
+            else:
+                return None
+
+        event_id = str(event.get("id") or event.get("zone_id") or "")
+        event_time = self._integer(event.get("confirmation_time") or event.get("available_at") or event.get("time"))
+        if not event_id or event_time is None:
+            return None
         entry = self._number(event.get("execution_entry") or execution.get("entry"))
+        if entry is None:
+            entry = self._number(event.get("line") or event.get("marker_price"))
         stop = self._number(auto_entry.get("stop_loss") or execution.get("stop"))
         targets = auto_entry.get("take_profit_levels") or []
         target = self._number(targets[0]) if targets else self._number(execution.get("target"))
-        message = (
-            f"Closed-candle {side.lower()} confirmation on {normalized_timeframe}. "
-            f"Quality {event.get('quality_score') or '-'}; broker execution remains disabled."
-        )
+        quality = event.get("diamond_score") or event.get("quality_score") or "-"
+        message = f"Completed-candle {side.lower()} Diamond {transition.lower()} on {normalized_timeframe}. Quality {quality}."
         payload = {
             "event": event,
             "auto_entry_status": auto_entry.get("status"),
             "execution_reality_status": execution.get("status"),
             "feed_reconciliation_status": reconciliation.get("status"),
             "news_gate": news.get("execution_gate"),
+            "transition": transition,
+            "completed_candle_only": True,
         }
         now = datetime.now(timezone.utc).isoformat()
-        event_key = f"{symbol}:{normalized_timeframe}:{event_id}"
+        event_key = f"{symbol}:{normalized_timeframe}:{event_id}:{transition}"
         with self._lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
@@ -156,7 +189,7 @@ class ClosedCandleAlerts:
                 "unread": int((stats["unread"] if stats else 0) or 0),
                 "action_count": int((stats["action_count"] if stats else 0) or 0),
             },
-            "delivery": "IN_APP_ONLY",
+            "delivery": "IN_APP_AND_OPT_IN_DEVICE",
             "broker_orders_enabled": False,
         }
 

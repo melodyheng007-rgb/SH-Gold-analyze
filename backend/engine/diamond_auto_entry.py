@@ -207,7 +207,7 @@ class DiamondAutoEntryEngine:
             "direction": direction,
             "order_type": "MARKET",
             "position_type": "CONFIRMED_ENTRY",
-            "setup_type": "Diamond V6.6 Signal Radar Entry",
+            "setup_type": "Diamond V7 Adaptive Entry",
             "base_setup_type": original_setup,
             "entry_zone": {
                 "type": "SH Diamond Zone V6.6 Signal Radar",

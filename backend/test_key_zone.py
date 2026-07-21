@@ -53,8 +53,10 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertIn(result["primary_zone"]["lifecycle"], {"FRESH", "TESTED"})
         self.assertIn(result["quality_grade"], {"A+", "A", "B", "C"})
         self.assertEqual(result["confirmation_state"], "CONFIRMED_HOLD")
-        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V6_SIMPLE_DISCOVERY")
-        self.assertEqual(result["profile"], "XAU_SIMPLE_DISCOVERY_V6_7_5M")
+        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V7_ADAPTIVE_DISCOVERY")
+        self.assertEqual(result["profile"], "XAU_ADAPTIVE_PRECISION_V7_5M")
+        self.assertEqual(result["adaptive_profile"]["asset_model"], "XAU_PRECISION")
+        self.assertTrue(result["adaptive_profile"]["quality_floor_preserved"])
         self.assertIn(result["primary_zone"]["signal_tier"], {"EARLY", "QUALIFIED", "CONFIRMED"})
         self.assertTrue(result["primary_zone"]["closed_candle_proof"]["non_repainting"])
         self.assertEqual(result["primary_zone"]["closed_candle_proof"]["locked_after"], impulse_time + 300)
@@ -225,14 +227,14 @@ class DiamondZoneEngineTests(unittest.TestCase):
             "entry_location_score": 90,
             "wider_entry_location_score": 90,
             "origin_quality_score": 90,
-            "origin_model": "LIQUIDITY_SWEEP",
+            "origin_model": "TREND_PULLBACK_RECLAIM",
             "liquidity_sweep": True,
             "structure_break": False,
             "compression_break": False,
-            "trend_pullback_reclaim": False,
+            "trend_pullback_reclaim": True,
             "news_spike_risk": False,
             "direction_aligned": True,
-            "close_strength": 0.80,
+            "close_strength": 0.92,
         }
 
         event = self.engine._origin_reclaim_event(
@@ -252,26 +254,160 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertTrue(event["origin_confirmation"])
         self.assertGreaterEqual(event["quality_score"], 70)
 
+    def test_xau_5m_fast_origin_reclaim_rejects_pure_liquidity_sweep(self) -> None:
+        rows = base_candles(31)
+        rows[30].update(open=100.0, high=100.80, low=99.80, close=100.60)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 99.80,
+            "low": 99.68,
+            "high": 99.92,
+            "atr_14": 1.0,
+            "entry_location_score": 90,
+            "wider_entry_location_score": 90,
+            "origin_quality_score": 90,
+            "origin_model": "LIQUIDITY_SWEEP",
+            "liquidity_sweep": True,
+            "structure_break": False,
+            "compression_break": False,
+            "trend_pullback_reclaim": False,
+            "news_spike_risk": False,
+            "direction_aligned": True,
+            "close_strength": 0.92,
+        }
+
+        event = self.engine._origin_reclaim_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
+
+        self.assertIsNone(event)
+
+    def test_xau_5m_fast_origin_reclaim_requires_strong_close(self) -> None:
+        rows = base_candles(31)
+        rows[30].update(open=100.0, high=100.80, low=99.80, close=100.60)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 99.80,
+            "low": 99.68,
+            "high": 99.92,
+            "atr_14": 1.0,
+            "entry_location_score": 90,
+            "wider_entry_location_score": 90,
+            "origin_quality_score": 90,
+            "origin_model": "TREND_PULLBACK_RECLAIM",
+            "liquidity_sweep": False,
+            "structure_break": True,
+            "compression_break": False,
+            "trend_pullback_reclaim": True,
+            "news_spike_risk": False,
+            "direction_aligned": True,
+            "close_strength": 0.84,
+        }
+
+        event = self.engine._origin_reclaim_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
+
+        self.assertIsNone(event)
+
     def test_confirms_active_shallow_pullback_without_waiting_for_deep_retest(self) -> None:
-        candles = base_candles(33)
-        origin_time = candles[30]["time"]
-        candles[30].update(open=100.0, high=102.40, low=99.0, close=102.20)
-        candles[31].update(open=102.20, high=102.30, low=101.40, close=101.60)
-        candles[32].update(open=101.60, high=102.50, low=101.50, close=102.40)
+        rows = base_candles(33)
+        rows[30].update(open=100.0, high=101.60, low=99.8, close=101.40)
+        rows[31].update(open=101.0, high=101.05, low=100.50, close=100.70)
+        rows[32].update(open=100.70, high=101.30, low=100.65, close=101.25)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 99.80,
+            "low": 99.68,
+            "high": 99.93,
+            "atr_14": 0.95,
+            "entry_location_score": 68,
+            "wider_entry_location_score": 68,
+            "origin_quality_score": 81,
+            "origin_model": "TREND_PULLBACK_RECLAIM",
+            "liquidity_sweep": False,
+            "structure_break": True,
+            "compression_break": False,
+            "trend_pullback_reclaim": True,
+            "active_structure": True,
+            "news_spike_risk": False,
+            "direction_aligned": True,
+        }
 
-        result = self.engine.calculate(candles, "5M", "MATCHED_PROVIDER")
-        event = result["latest_entry_event"]
+        event = self.engine._shallow_pullback_continuation_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
 
-        self.assertEqual(event["zone_id"], f"buy-{origin_time}")
-        self.assertEqual(event["time"], candles[32]["time"])
-        self.assertEqual(event["available_at"], candles[32]["time"])
+        self.assertIsNotNone(event)
+        self.assertEqual(event["zone_id"], zone["id"])
+        self.assertEqual(event["time"], rows[32]["time"])
+        self.assertEqual(event["available_at"], rows[32]["time"])
         self.assertEqual(event["confirmation_delay_bars"], 2)
         self.assertEqual(event["entry_pathway"], "SHALLOW_PULLBACK_CONTINUATION")
         self.assertEqual(event["confirmation_model"], "ACTIVE_SHALLOW_PULLBACK_CONTINUATION")
-        self.assertGreater(event["marker_price"], result["primary_zone"]["high"])
-        self.assertLess(event["entry_displacement_atr"], 0.85)
+        self.assertGreater(event["marker_price"], zone["high"])
+        self.assertLess(event["entry_displacement_atr"], 1.05)
         self.assertGreater(event["origin_line_displacement_atr"], 1.0)
-        self.assertGreaterEqual(event["quality_score"], 66)
+        self.assertLessEqual(event["origin_line_displacement_atr"], 1.55)
+        self.assertGreaterEqual(event["quality_score"], 72)
+
+    def test_shallow_pullback_rejects_a_late_chasing_confirmation(self) -> None:
+        rows = base_candles(33)
+        rows[30].update(open=100.0, high=101.60, low=99.8, close=101.40)
+        rows[31].update(open=101.0, high=101.05, low=100.50, close=100.70)
+        rows[32].update(open=100.70, high=101.65, low=100.65, close=101.60)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 99.80,
+            "low": 99.68,
+            "high": 99.93,
+            "atr_14": 0.95,
+            "entry_location_score": 68,
+            "wider_entry_location_score": 68,
+            "origin_quality_score": 81,
+            "origin_model": "TREND_PULLBACK_RECLAIM",
+            "liquidity_sweep": False,
+            "structure_break": True,
+            "compression_break": False,
+            "trend_pullback_reclaim": True,
+            "active_structure": True,
+            "news_spike_risk": False,
+            "direction_aligned": True,
+        }
+
+        event = self.engine._shallow_pullback_continuation_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
+
+        self.assertIsNone(event)
 
     def test_news_spike_origin_cannot_emit_an_immediate_diamond(self) -> None:
         candles = base_candles(33)
@@ -400,7 +536,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertTrue(result["gate_funnel"]["top_blockers"])
         self.assertIn("scoring 45 or higher", result["signal_integrity"]["production_signal_rule"])
 
-    def test_marginal_xau_impulse_is_context_only_and_cannot_become_an_entry(self) -> None:
+    def test_adaptive_xau_impulse_still_requires_a_closed_reaction_before_entry(self) -> None:
         candles = base_candles()
         candles[30].update(open=100.42, high=102.40, low=99.80, close=101.75)
         for index in range(31, len(candles)):
@@ -412,13 +548,244 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertEqual(xau["status"], "READY")
         self.assertTrue(xau["primary_zone"]["display_as_diamond"])
         self.assertIn(xau["primary_zone"]["diamond_grade"], {"C", "D"})
-        self.assertFalse(xau["primary_zone"]["execution_impulse_ready"])
-        self.assertIn("ENTRY_BODY_BELOW_FLOOR", xau["primary_zone"]["execution_impulse_failures"])
-        self.assertFalse(xau["primary_zone"]["entry_eligible_origin"])
-        self.assertFalse(xau["primary_zone"]["entry_score_qualified"])
+        self.assertTrue(xau["primary_zone"]["execution_impulse_ready"])
+        self.assertTrue(xau["primary_zone"]["entry_eligible_origin"])
+        self.assertTrue(xau["primary_zone"]["entry_score_qualified"])
+        self.assertEqual(xau["primary_zone"]["entry_stage"], "WAITING_RETEST")
+        self.assertFalse(xau["primary_zone"]["actionable_entry"])
         self.assertEqual(xau["entry_events"], [])
         self.assertEqual(standard["status"], "READY")
         self.assertTrue(standard["primary_zone"]["execution_impulse_ready"])
+
+    def test_xau_5m_confirms_first_controlled_scalp_reaction(self) -> None:
+        rows = base_candles(33)
+        rows[30].update(open=100.80, high=101.80, low=100.70, close=101.60)
+        rows[31].update(open=101.60, high=101.70, low=101.15, close=101.25)
+        rows[32].update(open=101.25, high=101.82, low=101.20, close=101.76)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 100.70,
+            "low": 100.58,
+            "high": 100.82,
+            "atr_14": 1.0,
+            "entry_location_score": 70,
+            "wider_entry_location_score": 72,
+            "origin_quality_score": 70,
+            "origin_model": "COMPRESSION_BREAK",
+            "liquidity_sweep": False,
+            "structure_break": False,
+            "compression_break": True,
+            "trend_pullback_reclaim": False,
+            "active_structure": True,
+            "wider_trend_direction": "BULLISH",
+            "news_spike_risk": False,
+            "direction_aligned": True,
+        }
+
+        event = self.engine._scalp_first_reaction_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["time"], rows[32]["time"])
+        self.assertEqual(event["entry_pathway"], "SCALP_FIRST_REACTION")
+        self.assertEqual(event["confirmation_model"], "ACTIVE_SCALP_FIRST_REACTION_CLOSE")
+        self.assertEqual(event["confirmation_delay_bars"], 2)
+        self.assertTrue(event["scalp_confirmation"])
+        self.assertGreaterEqual(event["quality_score"], 70)
+        self.assertLessEqual(event["risk_atr"], 1.65)
+
+    def test_scalp_reaction_rejects_opposite_wider_trend(self) -> None:
+        rows = base_candles(33)
+        rows[30].update(open=100.80, high=101.80, low=100.70, close=101.60)
+        rows[31].update(open=101.60, high=101.70, low=101.15, close=101.25)
+        rows[32].update(open=101.25, high=101.82, low=101.20, close=101.76)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 100.70,
+            "low": 100.58,
+            "high": 100.82,
+            "atr_14": 1.0,
+            "entry_location_score": 70,
+            "wider_entry_location_score": 72,
+            "origin_quality_score": 70,
+            "origin_model": "COMPRESSION_BREAK",
+            "liquidity_sweep": False,
+            "structure_break": False,
+            "compression_break": True,
+            "trend_pullback_reclaim": False,
+            "active_structure": True,
+            "wider_trend_direction": "BEARISH",
+            "news_spike_risk": False,
+            "direction_aligned": True,
+        }
+
+        event = self.engine._scalp_first_reaction_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
+
+        self.assertIsNone(event)
+
+    def test_scalp_reaction_rejects_compression_at_weak_location(self) -> None:
+        rows = base_candles(33)
+        rows[30].update(open=100.80, high=101.80, low=100.70, close=101.60)
+        rows[31].update(open=101.60, high=101.70, low=101.15, close=101.25)
+        rows[32].update(open=101.25, high=101.82, low=101.20, close=101.76)
+        zone = {
+            "id": f"buy-{rows[30]['time']}",
+            "time": rows[30]["time"],
+            "direction": "BULLISH",
+            "entry_side": "BUY",
+            "signal_label": "DIAMOND_BUY",
+            "line": 100.70,
+            "low": 100.58,
+            "high": 100.82,
+            "atr_14": 1.0,
+            "entry_location_score": 69,
+            "wider_entry_location_score": 82,
+            "origin_quality_score": 84,
+            "origin_model": "COMPRESSION_BREAK",
+            "active_structure": True,
+            "wider_trend_direction": "BULLISH",
+            "news_spike_risk": False,
+            "direction_aligned": True,
+        }
+
+        event = self.engine._scalp_first_reaction_event(
+            rows,
+            zone,
+            30,
+            self.engine._profile("XAUUSD", "5M"),
+        )
+
+        self.assertIsNone(event)
+
+    def test_scalp_fast_path_uses_asset_specific_5m_profiles(self) -> None:
+        self.assertTrue(self.engine._profile("XAUUSD", "5M")["scalp_first_reaction_enabled"])
+        self.assertFalse(self.engine._profile("XAUUSD", "15M")["scalp_first_reaction_enabled"])
+        self.assertTrue(self.engine._profile("BTCUSD", "5M")["scalp_first_reaction_enabled"])
+        self.assertEqual(self.engine._profile("BTCUSD", "5M")["asset_model"], "BTC_CONTINUATION")
+        self.assertEqual(self.engine._profile("XAUUSD", "5M")["entry_cooldown_bars"], 8)
+        self.assertEqual(self.engine._profile("XAUUSD", "5M")["min_scalp_compression_location_score"], 70)
+
+    def test_v7_adaptive_profile_adds_patience_without_lowering_quiet_market_quality(self) -> None:
+        rows = base_candles(110)
+        for index, row in enumerate(rows):
+            width = 1.4 if index < 86 else 0.55
+            row.update(high=100 + width / 2, low=100 - width / 2)
+        base = self.engine._profile("XAUUSD", "5M")
+        adaptive = self.engine._adaptive_profile(base, rows, "XAUUSD", "5M")
+
+        self.assertEqual(adaptive["adaptive_regime"], "QUIET")
+        self.assertEqual(adaptive["min_entry_quality"], base["min_entry_quality"])
+        self.assertGreater(adaptive["entry_window_bars"], base["entry_window_bars"])
+
+    def test_v7_elevated_regime_tightens_confirmation_and_anti_chase(self) -> None:
+        rows = base_candles(110)
+        for index, row in enumerate(rows):
+            width = 0.65 if index < 86 else 1.6
+            row.update(high=100 + width / 2, low=100 - width / 2)
+        base = self.engine._profile("BTCUSD", "5M")
+        adaptive = self.engine._adaptive_profile(base, rows, "BTCUSD", "5M")
+
+        self.assertEqual(adaptive["adaptive_regime"], "ELEVATED")
+        self.assertGreater(adaptive["min_entry_quality"], base["min_entry_quality"])
+        self.assertLess(adaptive["max_live_chase_atr"], base["max_live_chase_atr"])
+
+    def test_same_side_cooldown_keeps_spatially_distinct_zones(self) -> None:
+        profile = self.engine._profile("XAUUSD", "5M")
+        events = [
+            {"id": "first", "time": 1_700_000_000, "entry_side": "BUY", "line": 100.0, "atr_14": 10.0, "quality_score": 65},
+            {"id": "distinct", "time": 1_700_000_300, "entry_side": "BUY", "line": 106.0, "atr_14": 10.0, "quality_score": 66},
+            {"id": "replacement", "time": 1_700_000_600, "entry_side": "BUY", "line": 100.5, "atr_14": 10.0, "quality_score": 74},
+        ]
+
+        selected = self.engine._distinct_entry_events(events, profile)
+
+        self.assertEqual({item["id"] for item in selected}, {"distinct", "replacement"})
+
+    def test_lead_diamond_publishes_only_one_fresh_grade_b_zone(self) -> None:
+        profile = self.engine._profile("XAUUSD", "5M")
+        base = {
+            "display_as_diamond": True,
+            "entry_eligible_origin": True,
+            "lifecycle": "FRESH",
+            "zone_health": "WATCH",
+            "origin_broken": False,
+            "direction_holding": True,
+            "distance_atr": 0.8,
+            "direction": "BULLISH",
+            "display_role": "QUALIFIED_WATCH",
+            "execution_quality": "WATCH",
+            "price_side": "ABOVE",
+        }
+        zones = [
+            {**base, "id": "weak-c", "diamond_score": 68, "age_bars": 2, "time": 100},
+            {**base, "id": "lead-b", "diamond_score": 75, "age_bars": 4, "time": 200},
+            {**base, "id": "stale-a", "diamond_score": 84, "age_bars": 25, "time": 300},
+        ]
+
+        lead = self.engine._lead_diamond_zone(zones, [], "BULLISH", profile)
+
+        self.assertEqual(lead["id"], "lead-b")
+
+    def test_lead_diamond_rejects_opposite_or_invalidated_zone(self) -> None:
+        profile = self.engine._profile("XAUUSD", "5M")
+        zones = [{
+            "id": "opposite",
+            "display_as_diamond": True,
+            "entry_eligible_origin": True,
+            "diamond_score": 82,
+            "lifecycle": "FRESH",
+            "zone_health": "WATCH",
+            "origin_broken": False,
+            "direction_holding": True,
+            "age_bars": 2,
+            "distance_atr": 0.5,
+            "direction": "BEARISH",
+            "display_role": "QUALIFIED_WATCH",
+            "execution_quality": "READY",
+            "price_side": "BELOW",
+            "time": 100,
+        }]
+
+        self.assertIsNone(self.engine._lead_diamond_zone(zones, [], "BULLISH", profile))
+
+    def test_lead_diamond_rejects_context_only_zone(self) -> None:
+        profile = self.engine._profile("XAUUSD", "5M")
+        zones = [{
+            "id": "context-only",
+            "display_as_diamond": True,
+            "entry_eligible_origin": True,
+            "diamond_score": 78,
+            "lifecycle": "FRESH",
+            "zone_health": "WATCH",
+            "origin_broken": False,
+            "direction_holding": True,
+            "age_bars": 2,
+            "distance_atr": 0.5,
+            "direction": "BULLISH",
+            "display_role": "QUALIFIED_WATCH",
+            "execution_quality": "CONTEXT_ONLY",
+            "price_side": "ABOVE",
+            "time": 100,
+        }]
+
+        self.assertIsNone(self.engine._lead_diamond_zone(zones, [], "BULLISH", profile))
 
     def test_historical_confirmed_event_survives_after_live_zone_flips_without_staying_visible(self) -> None:
         candles = base_candles(40)

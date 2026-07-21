@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+from statistics import median
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -14,8 +15,8 @@ class DiamondZoneEngine:
 
     def __init__(
         self,
-        strategy_name: str = "SH_DIAMOND_ZONE_V6_SIMPLE_DISCOVERY",
-        engine_version: str = "DIAMOND_V6.7_SIMPLE_DISCOVERY",
+        strategy_name: str = "SH_DIAMOND_ZONE_V7_ADAPTIVE_DISCOVERY",
+        engine_version: str = "DIAMOND_V7_ADAPTIVE_ASSET_PROFILE",
         profile_adjustments: Optional[Dict[str, float]] = None,
         profile_suffix: str = "",
     ) -> None:
@@ -37,7 +38,7 @@ class DiamondZoneEngine:
         if len(rows) < 30:
             return self._empty("INSUFFICIENT_CLOSED_CANDLES", timeframe, source, len(rows), symbol)
 
-        profile = self._profile(symbol, timeframe)
+        profile = self._adaptive_profile(self._profile(symbol, timeframe), rows, symbol, timeframe)
         visible_score_floor = int(profile.get("min_visible_diamond_score", self.MIN_VISIBLE_DIAMOND_SCORE))
         expected = self._expected_direction(session_context or {}, analysis_context or {})
 
@@ -430,6 +431,14 @@ class DiamondZoneEngine:
         recent_entry = latest_entry if latest_entry and latest_entry["age_bars"] <= profile["max_entry_age_bars"] else None
         visible_zones = [zone for zone in zones if zone.get("display_as_diamond")]
         entry_grade_zones = [zone for zone in visible_zones if zone.get("entry_score_qualified")]
+        lead_zone = self._lead_diamond_zone(zones, entry_events, expected, profile)
+        for zone in zones:
+            zone["is_lead_diamond"] = bool(lead_zone and zone.get("id") == lead_zone.get("id"))
+        live_zones = [lead_zone] if lead_zone else []
+        lead_event = next((
+            event for event in reversed(entry_events)
+            if lead_zone and event.get("zone_id") == lead_zone.get("id")
+        ), None)
         signal_integrity = {
             "version": "DIAMOND_RESULT_INTEGRITY_V5_SIGNAL_TIERS",
             "confirmed_entries": len(entry_events),
@@ -438,8 +447,8 @@ class DiamondZoneEngine:
             "market_context": sum(1 for zone in visible_zones if zone.get("display_role") == "MARKET_CONTEXT"),
             "invalidated_context": sum(1 for zone in zones if zone.get("display_role") == "INVALIDATED_CONTEXT"),
             "rejected_internal": len(zones) - len(visible_zones),
-            "production_signal_rule": f"Structural context origins scoring {visible_score_floor} or higher are displayed; only strict execution-qualified Grade C or better events are executable.",
-            "qualified_rule": "Grade C or better (60+) is required before a Diamond may enter the closed-candle confirmation sequence.",
+            "production_signal_rule": f"Structural observations scoring {visible_score_floor} or higher remain auditable; only one fresh Grade B or better Lead Diamond is published live.",
+            "qualified_rule": f"The live Lead Diamond requires {profile['lead_diamond_score']}+ quality, an execution-qualified origin, intact lifecycle, and closed-candle confirmation before entry.",
             "context_rule": f"Sub-{visible_score_floor} and invalidated observations stay in the evidence audit but are hidden from the live chart.",
             "grade_rule": "Visible Diamond grades are A+, A, B, C, or D. Grade D is watch-only; C or better is entry-grade.",
             "tier_rule": "EARLY is market context, QUALIFIED passed the strict origin gate, and CONFIRMED passed a closed-candle entry pathway.",
@@ -449,11 +458,12 @@ class DiamondZoneEngine:
             zone for zone in zones
             if recent_entry and zone.get("id") == recent_entry.get("zone_id")
         ]
-        primary_pool = recent_entry_pool or visible_zones or zones
+        primary_pool = live_zones or recent_entry_pool or visible_zones or zones
         primary = min(primary_pool, key=lambda zone: self._primary_rank(zone, expected))
         context_is_close = primary["distance_atr"] <= profile["max_context_distance_atr"]
         context_is_usable = bool(
-            primary.get("display_as_diamond")
+            lead_zone
+            and primary.get("display_as_diamond")
             and primary["execution_quality"] not in {"INVALID", "CONTEXT_ONLY"}
         )
         rejection_confirmed = primary["rejection_status"] in {"STRONG", "MODERATE"}
@@ -494,12 +504,17 @@ class DiamondZoneEngine:
             else primary["high"] if expected == "BEARISH"
             else primary["line"]
         )
-        next_trigger = self._next_trigger(primary, candle_color) if visible_zones else f"Scanning for a valid Diamond score of {visible_score_floor} or higher"
+        next_trigger = (
+            self._next_trigger(primary, candle_color)
+            if lead_zone
+            else f"Scanning for one fresh Lead Diamond with Grade B / {profile['lead_diamond_score']}+ quality"
+        )
         return {
             "status": "READY",
             "strategy": self.strategy_name,
             "engine_version": self.engine_version,
             "profile": profile["name"],
+            "adaptive_profile": self._adaptive_profile_summary(profile),
             "symbol": str(symbol or "XAUUSD").upper(),
             "scope": "CONTEXT_ZONES_AND_CONFIRMED_ENTRY_EVENTS",
             "timeframe": timeframe,
@@ -517,7 +532,9 @@ class DiamondZoneEngine:
             "diamond_score": primary.get("diamond_score"),
             "diamond_grade": primary.get("diamond_grade"),
             "grade_model": primary.get("grade_model"),
-            "diamond_display_status": "READY" if visible_zones else "NO_QUALIFIED_DIAMOND",
+            "diamond_display_status": "READY" if lead_zone else "NO_QUALIFIED_DIAMOND",
+            "lead_diamond_status": "CONFIRMED" if lead_event else "ARMED" if lead_zone else "SCANNING",
+            "lead_diamond_score_floor": profile["lead_diamond_score"],
             "minimum_visible_diamond_score": visible_score_floor,
             "minimum_entry_diamond_score": self.MIN_ENTRY_DIAMOND_SCORE,
             "score_components": primary.get("score_components") or {},
@@ -531,6 +548,8 @@ class DiamondZoneEngine:
             "primary_zone": self._public_zone(primary),
             "zones": [self._public_zone(zone) for zone in zones],
             "visible_zones": [self._public_zone(zone) for zone in visible_zones],
+            "live_zones": [self._public_zone(zone) for zone in live_zones],
+            "lead_diamond_zone": self._public_zone(lead_zone) if lead_zone else None,
             "entry_events": [self._public_entry_event(event) for event in entry_events],
             "latest_entry_event": self._public_entry_event(latest_entry) if latest_entry else None,
             "entry_event_status": (
@@ -542,10 +561,11 @@ class DiamondZoneEngine:
             "signal_frequency": {
                 "internal_observations": len(zones),
                 "visible_diamonds": len(visible_zones),
+                "live_diamonds": len(live_zones),
                 "context_zones": len(visible_zones),
                 "qualified_origins": len(entry_grade_zones),
                 "confirmed_entries": len(entry_events),
-                "visible_entry_limit": 3,
+                "visible_entry_limit": profile["max_daily_entries"],
                 "context_zone_limit": profile["context_zone_limit"],
                 "same_side_cooldown_bars": profile["entry_cooldown_bars"],
             },
@@ -570,6 +590,7 @@ class DiamondZoneEngine:
                 "minimum_wider_location_score": profile["min_macro_execution_location_score"],
                 "minimum_visible_diamond_score": visible_score_floor,
                 "minimum_entry_diamond_score": self.MIN_ENTRY_DIAMOND_SCORE,
+                "lead_diamond_score_floor": profile["lead_diamond_score"],
                 "disqualifiers": primary.get("origin_disqualifiers") or [],
             },
             "next_trigger": next_trigger,
@@ -589,13 +610,14 @@ class DiamondZoneEngine:
                 ),
                 "diamond_event": (
                     "A Diamond is confirmed after a precision structural origin using an origin reclaim, a shallow "
-                    "pullback continuation, a strong deep-retest reclaim, or 1-3 candle directional follow-through"
+                    "pullback continuation, an aligned XAU 5M first reaction, a strong deep-retest reclaim, or "
+                    "1-3 candle directional follow-through"
                 ),
                 "diamond_line": "BUY uses the bullish origin low; SELL uses the bearish origin high",
                 "zone_band": f"Diamond line +/- max({profile['atr_band']:.2f} ATR14, {profile['range_band']:.2f} candle range)",
                 "direction": "BUY requires a discount-side bullish origin; SELL requires a premium-side bearish origin",
-                "quality": f"0-100 gated model: sub-{visible_score_floor} is internal audit, D {visible_score_floor}-59 is watch-only, and C 60+ may proceed to entry confirmation",
-                "primary_zone": "Execution quality, HTF side, active-zone test, ATR distance, lifecycle, and effective score",
+                "quality": f"0-100 gated model: sub-{visible_score_floor} is internal audit, D/C remain evidence or watch, and only B {profile['lead_diamond_score']}+ may become the single live Lead Diamond",
+                "primary_zone": "One Lead Diamond selected by confirmation, Grade B+ quality, HTF side, intact lifecycle, ATR distance, and freshness",
             },
             "uses_completed_candles_only": True,
             "proprietary_formula_claimed": False,
@@ -645,6 +667,7 @@ class DiamondZoneEngine:
             "confirmation_pathways": [
                 "ORIGIN_RECLAIM_CLOSE",
                 "SHALLOW_PULLBACK_CONTINUATION",
+                "SCALP_FIRST_REACTION",
                 "RECLAIM_CLOSE",
                 "MULTI_CANDLE_FOLLOW_THROUGH",
             ],
@@ -687,6 +710,21 @@ class DiamondZoneEngine:
                 "confirmation_pathway": "SHALLOW_PULLBACK_CONTINUATION",
             })
             return active_event
+        scalp_event = self._scalp_first_reaction_event(rows, zone, origin_index, profile)
+        if scalp_event:
+            trace.update({
+                "blocker": None,
+                "scalp_first_reaction": True,
+                "controlled_retest": True,
+                "rejection": True,
+                "follow_through": True,
+                "risk_quality": True,
+                "quality_score": scalp_event["quality_score"],
+                "required_quality": profile["min_scalp_reaction_quality"],
+                "confirmed": True,
+                "confirmation_pathway": "SCALP_FIRST_REACTION",
+            })
+            return scalp_event
         end = min(len(rows) - 1, origin_index + int(profile["entry_window_bars"]) + 1)
         for index in range(origin_index + 1, end):
             trigger = rows[index]
@@ -804,6 +842,8 @@ class DiamondZoneEngine:
     ) -> Optional[Dict[str, Any]]:
         if not (zone.get("liquidity_sweep") or zone.get("trend_pullback_reclaim")):
             return None
+        if profile.get("origin_reclaim_trend_only") and not zone.get("trend_pullback_reclaim"):
+            return None
         if zone.get("news_spike_risk") or zone.get("direction_aligned") is False:
             return None
         origin = rows[origin_index]
@@ -811,6 +851,8 @@ class DiamondZoneEngine:
         candle_range = max(origin["high"] - origin["low"], 1e-9)
         body_ratio = abs(origin["close"] - origin["open"]) / candle_range
         close_strength = float(zone.get("close_strength") or 0)
+        if close_strength < float(profile.get("min_origin_reclaim_close_strength") or 0):
+            return None
         wick_ratio = (
             (min(origin["open"], origin["close"]) - origin["low"]) / candle_range
             if zone["entry_side"] == "BUY"
@@ -853,6 +895,11 @@ class DiamondZoneEngine:
         if zone.get("news_spike_risk") or zone.get("direction_aligned") is False:
             return None
         if not zone.get("active_structure"):
+            return None
+        if (
+            profile.get("active_continuation_trend_only")
+            and zone.get("origin_model") != "TREND_PULLBACK_RECLAIM"
+        ):
             return None
         if (
             str(profile.get("name") or "").startswith("XAU_")
@@ -920,6 +967,7 @@ class DiamondZoneEngine:
                 or range_atr > profile["max_follow_range_atr"]
                 or not profile["min_event_risk_atr"] <= risk_atr <= profile["max_event_risk_atr"]
                 or displacement > profile["max_active_entry_displacement_atr"]
+                or line_displacement > profile["max_active_origin_line_displacement_atr"]
             ):
                 continue
             trigger_quality = min(100.0, body_ratio * 45 + close_strength * 45 + min(directional_progress, 1.0) * 10)
@@ -949,6 +997,124 @@ class DiamondZoneEngine:
                 index - origin_index,
             )
             event["origin_line_displacement_atr"] = round(line_displacement, 3)
+            return event
+        return None
+
+    def _scalp_first_reaction_event(
+        self,
+        rows: list[Dict[str, Any]],
+        zone: Dict[str, Any],
+        origin_index: int,
+        profile: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Confirm an aligned 5M continuation after its first controlled reaction."""
+        if not profile.get("scalp_first_reaction_enabled"):
+            return None
+        if zone.get("news_spike_risk") or zone.get("direction_aligned") is False:
+            return None
+        if not zone.get("active_structure"):
+            return None
+        if (
+            zone.get("origin_model") == "COMPRESSION_BREAK"
+            and float(zone.get("entry_location_score") or 0)
+            < float(profile.get("min_scalp_compression_location_score") or 0)
+        ):
+            return None
+
+        expected_trend = "BULLISH" if zone["entry_side"] == "BUY" else "BEARISH"
+        wider_trend = str(zone.get("wider_trend_direction") or "MIXED")
+        if wider_trend not in {expected_trend, "MIXED"}:
+            return None
+
+        atr = max(float(zone["atr_14"]), 1e-9)
+        origin = rows[origin_index]
+        window = int(profile["scalp_reaction_window_bars"])
+        end = min(len(rows), origin_index + 1 + window)
+        for index in range(origin_index + 1, end):
+            confirmation = rows[index]
+            if self._closed_beyond_zone(confirmation, zone):
+                return None
+
+            sequence = rows[origin_index + 1:index + 1]
+            previous = rows[index - 1]
+            candle_range = max(confirmation["high"] - confirmation["low"], 1e-9)
+            body_ratio = abs(confirmation["close"] - confirmation["open"]) / candle_range
+            range_atr = candle_range / atr
+            if zone["entry_side"] == "BUY":
+                pullback_extreme = min(item["low"] for item in sequence)
+                pullback_atr = max(0.0, origin["close"] - pullback_extreme) / atr
+                close_strength = (confirmation["close"] - confirmation["low"]) / candle_range
+                wick_ratio = (min(confirmation["open"], confirmation["close"]) - confirmation["low"]) / candle_range
+                directional_ready = bool(
+                    confirmation["close"] > confirmation["open"]
+                    and confirmation["close"] > previous["high"]
+                )
+                directional_progress = max(0.0, confirmation["close"] - previous["close"]) / atr
+                stop_reference = pullback_extreme
+                marker_price = pullback_extreme - atr * 0.14
+            else:
+                pullback_extreme = max(item["high"] for item in sequence)
+                pullback_atr = max(0.0, pullback_extreme - origin["close"]) / atr
+                close_strength = (confirmation["high"] - confirmation["close"]) / candle_range
+                wick_ratio = (confirmation["high"] - max(confirmation["open"], confirmation["close"])) / candle_range
+                directional_ready = bool(
+                    confirmation["close"] < confirmation["open"]
+                    and confirmation["close"] < previous["low"]
+                )
+                directional_progress = max(0.0, previous["close"] - confirmation["close"]) / atr
+                stop_reference = pullback_extreme
+                marker_price = pullback_extreme + atr * 0.14
+
+            risk_atr = (abs(confirmation["close"] - stop_reference) + atr * 0.10) / atr
+            displacement = abs(confirmation["close"] - zone["line"]) / atr
+            if (
+                not directional_ready
+                or pullback_atr < profile["min_scalp_pullback_atr"]
+                or pullback_atr > profile["max_scalp_pullback_atr"]
+                or body_ratio < profile["min_scalp_reaction_body_ratio"]
+                or close_strength < profile["min_scalp_reaction_close_strength"]
+                or directional_progress < profile["min_scalp_reaction_progress_atr"]
+                or range_atr > profile["max_scalp_reaction_range_atr"]
+                or risk_atr < profile["min_event_risk_atr"]
+                or risk_atr > profile["max_scalp_reaction_risk_atr"]
+                or displacement > profile["max_scalp_reaction_displacement_atr"]
+            ):
+                continue
+
+            trigger_quality = min(
+                100.0,
+                body_ratio * 35
+                + close_strength * 40
+                + min(directional_progress / 0.25, 1.0) * 25,
+            )
+            pullback_quality = max(
+                0.0,
+                100 - abs(pullback_atr - profile["ideal_scalp_pullback_atr"]) * 75,
+            )
+            quality = (
+                float(zone["origin_quality_score"]) * 0.45
+                + float(zone["entry_location_score"]) * 0.10
+                + float(zone.get("wider_entry_location_score") or zone["entry_location_score"]) * 0.10
+                + trigger_quality * 0.25
+                + pullback_quality * 0.10
+                + (4 if wider_trend == expected_trend else 2)
+            )
+            quality_score = round(max(0, min(100, quality)))
+            if quality_score < max(self.MIN_ENTRY_DIAMOND_SCORE, profile["min_scalp_reaction_quality"]):
+                continue
+
+            event = self._entry_payload(
+                rows, zone, confirmation, confirmation, index, marker_price, stop_reference,
+                quality_score, risk_atr, displacement, wick_ratio, close_strength,
+                range_atr, body_ratio, range_atr, close_strength, directional_progress,
+                "ACTIVE_SCALP_FIRST_REACTION_CLOSE", "SCALP_FIRST_REACTION",
+                index - origin_index,
+            )
+            event.update({
+                "scalp_confirmation": True,
+                "pullback_atr": round(pullback_atr, 3),
+                "wider_trend_confirmation": wider_trend,
+            })
             return event
         return None
 
@@ -1428,11 +1594,17 @@ class DiamondZoneEngine:
     def _distinct_entry_events(events: list[Dict[str, Any]], profile: Dict[str, Any]) -> list[Dict[str, Any]]:
         selected: list[Dict[str, Any]] = []
         cooldown_seconds = int(profile["entry_cooldown_bars"]) * int(profile["timeframe_seconds"])
+        dedupe_distance_atr = float(profile.get("entry_dedupe_distance_atr") or 0.35)
         for event in sorted(events, key=lambda item: int(item["time"])):
             nearby_index = next((
                 index for index in range(len(selected) - 1, -1, -1)
                 if selected[index]["entry_side"] == event["entry_side"]
                 and int(event["time"]) - int(selected[index]["time"]) <= cooldown_seconds
+                and abs(float(event["line"]) - float(selected[index]["line"])) <= max(
+                    float(event.get("atr_14") or 0),
+                    float(selected[index].get("atr_14") or 0),
+                    1e-9,
+                ) * dedupe_distance_atr
             ), None)
             if nearby_index is None:
                 selected.append(event)
@@ -1544,6 +1716,52 @@ class DiamondZoneEngine:
             -float(zone.get("effective_score") or 0),
             -int(zone.get("time") or 0),
         )
+
+    @classmethod
+    def _lead_diamond_zone(
+        cls,
+        zones: list[Dict[str, Any]],
+        entry_events: list[Dict[str, Any]],
+        expected: str,
+        profile: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Select one fresh, execution-qualified zone for the live chart."""
+        score_floor = int(profile.get("lead_diamond_score") or 70)
+        max_age = int(profile.get("lead_zone_max_age_bars") or profile.get("entry_window_bars") or 12)
+        event_by_zone = {
+            str(event.get("zone_id")): event
+            for event in entry_events
+            if int(event.get("quality_score") or 0) >= score_floor
+        }
+        candidates = [
+            zone for zone in zones
+            if zone.get("display_as_diamond")
+            and zone.get("entry_eligible_origin")
+            and int(zone.get("diamond_score") or 0) >= score_floor
+            and str(zone.get("lifecycle") or "") in {"FRESH", "TESTED"}
+            and str(zone.get("zone_health") or "") not in {"INVALIDATED", "STALE", "REJECTED"}
+            and str(zone.get("execution_quality") or "") in {"READY", "WATCH", "WAIT_RETEST"}
+            and zone.get("origin_broken") is not True
+            and zone.get("direction_holding") is True
+            and int(zone.get("age_bars") or 0) <= max_age
+            and float(zone.get("distance_atr") or 0) <= float(profile.get("max_context_distance_atr") or 2.5)
+            and (
+                expected not in {"BULLISH", "BEARISH"}
+                or zone.get("direction") == expected
+            )
+        ]
+        if not candidates:
+            return None
+
+        def rank(zone: Dict[str, Any]) -> tuple:
+            event = event_by_zone.get(str(zone.get("id")))
+            return (
+                0 if event else 1,
+                -int((event or {}).get("quality_score") or zone.get("diamond_score") or 0),
+                cls._primary_rank(zone, expected),
+            )
+
+        return min(candidates, key=rank)
 
     def combine_timeframes(
         self,
@@ -1721,12 +1939,64 @@ class DiamondZoneEngine:
         return profile
 
     @staticmethod
+    def _adaptive_profile(
+        profile: Dict[str, Any],
+        rows: list[Dict[str, Any]],
+        symbol: str,
+        timeframe: str,
+    ) -> Dict[str, Any]:
+        """Adapt timing and safety gates without weakening the production score floor."""
+        runtime = dict(profile)
+        normalized_symbol = str(symbol or "XAUUSD").upper()
+        normalized_timeframe = str(timeframe or "15M").upper()
+        ranges = [max(0.0, float(row["high"]) - float(row["low"])) for row in rows]
+        recent = ranges[-24:]
+        baseline = ranges[-96:-24] or ranges[:-24][-48:]
+        recent_median = median(recent) if recent else 0.0
+        baseline_median = median(baseline) if baseline else recent_median
+        volatility_ratio = recent_median / baseline_median if baseline_median > 0 else 1.0
+        regime = "ELEVATED" if volatility_ratio >= 1.45 else "QUIET" if volatility_ratio <= 0.72 else "NORMAL"
+        adjustments: list[str] = []
+
+        if regime == "ELEVATED" and normalized_timeframe in {"5M", "15M"}:
+            runtime["min_entry_quality"] = min(100, int(runtime["min_entry_quality"]) + 2)
+            runtime["min_active_entry_quality"] = min(100, int(runtime["min_active_entry_quality"]) + 2)
+            runtime["min_scalp_reaction_quality"] = min(100, int(runtime["min_scalp_reaction_quality"]) + 2)
+            runtime["max_live_chase_atr"] = round(max(0.20, float(runtime["max_live_chase_atr"]) - 0.05), 3)
+            runtime["entry_cooldown_bars"] = int(runtime["entry_cooldown_bars"]) + 1
+            adjustments.extend(["STRONGER_CONFIRMATION", "TIGHTER_ANTI_CHASE", "LONGER_DEDUPE"])
+        elif regime == "QUIET":
+            runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + 2
+            runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 2
+            adjustments.extend(["LONGER_RETEST_WINDOW", "LONGER_ZONE_PATIENCE"])
+
+        runtime["adaptive_regime"] = regime
+        runtime["adaptive_volatility_ratio"] = round(volatility_ratio, 3)
+        runtime["adaptive_adjustments"] = adjustments or ["BASELINE_GATES"]
+        runtime["asset_model"] = runtime.get("asset_model") or (
+            "XAU_PRECISION" if normalized_symbol == "XAUUSD" else "BTC_CONTINUATION" if normalized_symbol == "BTCUSD" else "CROSS_ASSET"
+        )
+        return runtime
+
+    @staticmethod
+    def _adaptive_profile_summary(profile: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "version": "ADAPTIVE_PROFILE_V7",
+            "asset_model": profile.get("asset_model") or "CROSS_ASSET",
+            "regime": profile.get("adaptive_regime") or "WAITING",
+            "volatility_ratio": profile.get("adaptive_volatility_ratio"),
+            "adjustments": list(profile.get("adaptive_adjustments") or []),
+            "closed_candles_only": True,
+            "quality_floor_preserved": True,
+        }
+
+    @staticmethod
     def _threshold_profile(symbol: str, timeframe: str) -> Dict[str, Any]:
         normalized_symbol = str(symbol or "XAUUSD").upper()
         normalized_timeframe = str(timeframe or "15M").upper()
         if normalized_symbol == "XAUUSD":
             entry_profiles = {
-                "5M": (0.54, 1.10, 0.68, 68, 1.45, 24, 12, 66, 72),
+                "5M": (0.48, 0.98, 0.64, 62, 1.45, 28, 8, 56, 74),
                 "15M": (0.52, 1.08, 0.67, 66, 1.42, 18, 8, 65, 72),
                 "1H": (0.50, 1.06, 0.66, 65, 1.40, 12, 6, 64, 70),
                 "4H": (0.50, 1.05, 0.65, 65, 1.38, 9, 4, 64, 70),
@@ -1740,10 +2010,11 @@ class DiamondZoneEngine:
             entry_body, entry_range, entry_close, entry_score, _, window, cooldown, execution_location, entry_quality = entry_profiles.get(normalized_timeframe, entry_profiles["15M"])
             body, range_ratio, close, score, expansion = context_profiles.get(normalized_timeframe, context_profiles["15M"])
             location_window = {"5M": 36, "15M": 32, "1H": 24, "4H": 20}.get(normalized_timeframe, 32)
-            wider_execution_location = 64 if normalized_timeframe in {"5M", "15M"} else 62
-            origin_quality_floor = 74 if normalized_timeframe in {"5M", "15M"} else 72
+            wider_execution_location = 54 if normalized_timeframe == "5M" else 64 if normalized_timeframe == "15M" else 62
+            origin_quality_floor = 64 if normalized_timeframe == "5M" else 74 if normalized_timeframe == "15M" else 72
             return {
-                "name": f"XAU_SIMPLE_DISCOVERY_V6_7_{normalized_timeframe}",
+                "name": f"XAU_ADAPTIVE_PRECISION_V7_{normalized_timeframe}",
+                "asset_model": "XAU_PRECISION",
                 "min_visible_diamond_score": DiamondZoneEngine.XAU_MIN_VISIBLE_DIAMOND_SCORE,
                 "min_body_ratio": body,
                 "min_range_ratio": range_ratio,
@@ -1777,17 +2048,34 @@ class DiamondZoneEngine:
                 "min_reclaim_close_strength": 0.70,
                 "min_reclaim_wick": 0.24,
                 "min_reclaim_body": 0.62,
-                "min_reclaim_entry_quality": 68 if normalized_timeframe in {"5M", "15M"} else 66,
-                "min_origin_reclaim_quality": 70 if normalized_timeframe in {"5M", "15M"} else 68,
-                "max_origin_entry_displacement_atr": 1.05 if normalized_timeframe in {"5M", "15M"} else 1.15,
-                "active_follow_window_bars": 3,
+                "min_reclaim_entry_quality": 74 if normalized_timeframe == "5M" else 68 if normalized_timeframe == "15M" else 66,
+                "min_origin_reclaim_quality": 70 if normalized_timeframe == "5M" else 70 if normalized_timeframe == "15M" else 68,
+                "origin_reclaim_trend_only": normalized_timeframe == "5M",
+                "min_origin_reclaim_close_strength": 0.88 if normalized_timeframe == "5M" else 0.0,
+                "max_origin_entry_displacement_atr": 1.30 if normalized_timeframe == "5M" else 1.05 if normalized_timeframe == "15M" else 1.15,
+                "active_follow_window_bars": 6 if normalized_timeframe == "5M" else 3,
+                "active_continuation_trend_only": normalized_timeframe == "5M",
                 "min_active_pullback_atr": 0.08,
-                "max_active_pullback_atr": 1.05 if normalized_timeframe in {"5M", "15M"} else 1.15,
+                "max_active_pullback_atr": 1.25 if normalized_timeframe == "5M" else 1.05 if normalized_timeframe == "15M" else 1.15,
                 "ideal_active_pullback_atr": 0.42,
-                "min_active_body_ratio": 0.34,
-                "min_active_close_strength": 0.60,
-                "min_active_entry_quality": 66 if normalized_timeframe in {"5M", "15M"} else 64,
-                "max_active_entry_displacement_atr": 0.85 if normalized_timeframe in {"5M", "15M"} else 0.95,
+                "min_active_body_ratio": 0.32 if normalized_timeframe == "5M" else 0.34,
+                "min_active_close_strength": 0.58 if normalized_timeframe == "5M" else 0.60,
+                "min_active_entry_quality": 72 if normalized_timeframe == "5M" else 66 if normalized_timeframe == "15M" else 64,
+                "max_active_entry_displacement_atr": 1.05 if normalized_timeframe == "5M" else 0.85 if normalized_timeframe == "15M" else 0.95,
+                "max_active_origin_line_displacement_atr": 1.55 if normalized_timeframe == "5M" else 1.45,
+                "scalp_first_reaction_enabled": normalized_timeframe == "5M",
+                "scalp_reaction_window_bars": 6,
+                "min_scalp_pullback_atr": 0.04,
+                "max_scalp_pullback_atr": 1.45,
+                "ideal_scalp_pullback_atr": 0.45,
+                "min_scalp_reaction_body_ratio": 0.32,
+                "min_scalp_reaction_close_strength": 0.58,
+                "min_scalp_reaction_progress_atr": 0.02,
+                "max_scalp_reaction_range_atr": 2.00,
+                "max_scalp_reaction_risk_atr": 1.65,
+                "max_scalp_reaction_displacement_atr": 1.55,
+                "min_scalp_reaction_quality": 70 if normalized_timeframe == "5M" else 60,
+                "min_scalp_compression_location_score": 70 if normalized_timeframe == "5M" else 0,
                 "min_event_risk_atr": 0.20,
                 "max_event_risk_atr": 1.50 if normalized_timeframe in {"5M", "15M"} else 1.65,
                 "max_entry_displacement_atr": 1.15 if normalized_timeframe in {"5M", "15M"} else 1.30,
@@ -1799,13 +2087,17 @@ class DiamondZoneEngine:
                 "min_compression_break_atr": 1.02,
                 "entry_window_bars": window,
                 "entry_cooldown_bars": cooldown,
-                "max_daily_entries": 3,
-                "context_zone_limit": 14,
+                "entry_dedupe_distance_atr": 0.35,
+                "max_daily_entries": 5 if normalized_timeframe == "5M" else 3,
+                "context_zone_limit": 24 if normalized_timeframe == "5M" else 14,
+                "lead_diamond_score": 70,
+                "lead_zone_max_age_bars": 24 if normalized_timeframe == "5M" else 12,
                 "max_entry_age_bars": 2,
                 "timeframe_seconds": {"5M": 300, "15M": 900, "1H": 3600, "4H": 14400}.get(normalized_timeframe, 900),
             }
-        return {
-            "name": f"STANDARD_SIMPLE_DISCOVERY_V6_7_{normalized_timeframe}",
+        profile = {
+            "name": f"STANDARD_ADAPTIVE_DISCOVERY_V7_{normalized_timeframe}",
+            "asset_model": "CROSS_ASSET",
             "min_visible_diamond_score": DiamondZoneEngine.MIN_VISIBLE_DIAMOND_SCORE,
             "min_body_ratio": 0.40,
             "min_range_ratio": 0.88,
@@ -1841,8 +2133,11 @@ class DiamondZoneEngine:
             "min_reclaim_body": 0.58,
             "min_reclaim_entry_quality": 66,
             "min_origin_reclaim_quality": 66,
+            "origin_reclaim_trend_only": False,
+            "min_origin_reclaim_close_strength": 0.0,
             "max_origin_entry_displacement_atr": 1.15,
             "active_follow_window_bars": 3,
+            "active_continuation_trend_only": False,
             "min_active_pullback_atr": 0.06,
             "max_active_pullback_atr": 1.20,
             "ideal_active_pullback_atr": 0.45,
@@ -1850,6 +2145,20 @@ class DiamondZoneEngine:
             "min_active_close_strength": 0.58,
             "min_active_entry_quality": 64,
             "max_active_entry_displacement_atr": 0.95,
+            "max_active_origin_line_displacement_atr": 1.55,
+            "scalp_first_reaction_enabled": False,
+            "scalp_reaction_window_bars": 0,
+            "min_scalp_pullback_atr": 0.04,
+            "max_scalp_pullback_atr": 1.45,
+            "ideal_scalp_pullback_atr": 0.45,
+            "min_scalp_reaction_body_ratio": 0.32,
+            "min_scalp_reaction_close_strength": 0.58,
+            "min_scalp_reaction_progress_atr": 0.02,
+            "max_scalp_reaction_range_atr": 2.00,
+            "max_scalp_reaction_risk_atr": 1.65,
+            "max_scalp_reaction_displacement_atr": 1.55,
+            "min_scalp_reaction_quality": 60,
+            "min_scalp_compression_location_score": 0,
             "min_event_risk_atr": 0.20,
             "max_event_risk_atr": 1.60,
             "max_entry_displacement_atr": 1.25,
@@ -1861,11 +2170,33 @@ class DiamondZoneEngine:
             "min_compression_break_atr": 1.00,
             "entry_window_bars": 20,
             "entry_cooldown_bars": 6,
+            "entry_dedupe_distance_atr": 0.35,
             "max_daily_entries": 3,
             "context_zone_limit": 14,
+            "lead_diamond_score": 70,
+            "lead_zone_max_age_bars": 18,
             "max_entry_age_bars": 2,
             "timeframe_seconds": {"5M": 300, "15M": 900, "1H": 3600, "4H": 14400}.get(normalized_timeframe, 900),
         }
+        if normalized_symbol == "BTCUSD":
+            profile.update({
+                "name": f"BTC_ADAPTIVE_CONTINUATION_V7_{normalized_timeframe}",
+                "asset_model": "BTC_CONTINUATION",
+                "entry_min_body_ratio": 0.46 if normalized_timeframe == "5M" else profile["entry_min_body_ratio"],
+                "entry_min_range_ratio": 1.00 if normalized_timeframe == "5M" else profile["entry_min_range_ratio"],
+                "entry_min_close_strength": 0.63 if normalized_timeframe == "5M" else profile["entry_min_close_strength"],
+                "entry_min_score": 62 if normalized_timeframe == "5M" else profile["entry_min_score"],
+                "min_execution_location_score": 52 if normalized_timeframe == "5M" else profile["min_execution_location_score"],
+                "min_macro_execution_location_score": 52 if normalized_timeframe == "5M" else profile["min_macro_execution_location_score"],
+                "min_origin_quality_for_entry": 68 if normalized_timeframe == "5M" else profile["min_origin_quality_for_entry"],
+                "scalp_first_reaction_enabled": normalized_timeframe == "5M",
+                "min_scalp_reaction_quality": 68 if normalized_timeframe == "5M" else profile["min_scalp_reaction_quality"],
+                "min_scalp_compression_location_score": 60 if normalized_timeframe == "5M" else 0,
+                "entry_cooldown_bars": 7 if normalized_timeframe == "5M" else profile["entry_cooldown_bars"],
+                "max_daily_entries": 4 if normalized_timeframe == "5M" else profile["max_daily_entries"],
+                "context_zone_limit": 18 if normalized_timeframe == "5M" else profile["context_zone_limit"],
+            })
+        return profile
 
     def _rejection_metrics(self, rows: list[Dict[str, Any]], zone: Dict[str, Any]) -> Dict[str, Any]:
         recent = [row for row in rows if row["time"] > zone["time"]][-12:]
@@ -1998,6 +2329,7 @@ class DiamondZoneEngine:
             "rejection_wick_ratio", "rejection_close_strength", "retest_range_atr",
             "follow_body_ratio", "follow_range_atr", "follow_through_strength",
             "follow_progress_atr", "risk_atr", "entry_displacement_atr", "origin_line_displacement_atr",
+            "pullback_atr",
         ]:
             if key in rounded:
                 rounded[key] = round(float(rounded[key]), 3)
@@ -2039,13 +2371,14 @@ class DiamondZoneEngine:
         return sorted(unique.values(), key=lambda row: row["time"])
 
     def _empty(self, status: str, timeframe: str, source: Optional[str], count: int, symbol: str = "XAUUSD") -> Dict[str, Any]:
-        profile = self._profile(symbol, timeframe)
+        profile = self._adaptive_profile(self._profile(symbol, timeframe), [], symbol, timeframe)
         visible_score_floor = int(profile.get("min_visible_diamond_score", self.MIN_VISIBLE_DIAMOND_SCORE))
         return {
             "status": status,
             "strategy": self.strategy_name,
             "engine_version": self.engine_version,
             "profile": profile["name"],
+            "adaptive_profile": self._adaptive_profile_summary(profile),
             "symbol": str(symbol or "XAUUSD").upper(),
             "scope": "CONTEXT_ZONES_AND_CONFIRMED_ENTRY_EVENTS",
             "timeframe": timeframe,
@@ -2054,6 +2387,9 @@ class DiamondZoneEngine:
             "directional_bias": "WAIT",
             "primary_zone": None,
             "zones": [],
+            "visible_zones": [],
+            "live_zones": [],
+            "lead_diamond_zone": None,
             "entry_events": [],
             "latest_entry_event": None,
             "entry_event_status": "WAITING_CONFIRMATION",
@@ -2061,6 +2397,8 @@ class DiamondZoneEngine:
             "diamond_grade": None,
             "grade_model": "DIAMOND_GRADE_V2_SCORE_GATED",
             "diamond_display_status": "NO_QUALIFIED_DIAMOND",
+            "lead_diamond_status": "SCANNING",
+            "lead_diamond_score_floor": profile["lead_diamond_score"],
             "minimum_visible_diamond_score": visible_score_floor,
             "minimum_entry_diamond_score": self.MIN_ENTRY_DIAMOND_SCORE,
             "signal_integrity": {
@@ -2077,10 +2415,11 @@ class DiamondZoneEngine:
             "signal_frequency": {
                 "internal_observations": 0,
                 "visible_diamonds": 0,
+                "live_diamonds": 0,
                 "context_zones": 0,
                 "qualified_origins": 0,
                 "confirmed_entries": 0,
-                "visible_entry_limit": 3,
+                "visible_entry_limit": profile["max_daily_entries"],
                 "context_zone_limit": profile["context_zone_limit"],
                 "same_side_cooldown_bars": profile["entry_cooldown_bars"],
             },
@@ -2099,6 +2438,7 @@ class DiamondZoneEngine:
                 "minimum_wider_location_score": profile["min_macro_execution_location_score"],
                 "minimum_visible_diamond_score": visible_score_floor,
                 "minimum_entry_diamond_score": self.MIN_ENTRY_DIAMOND_SCORE,
+                "lead_diamond_score_floor": profile["lead_diamond_score"],
                 "disqualifiers": [status],
             },
             "gate_funnel": DiamondZoneEngine._gate_funnel(

@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title SH Market Analyzer V3.7 - Backend
+title SH Market Analyzer V3.8 - Backend
 cd /d "%~dp0backend"
 
 set "BACKEND_URL=http://127.0.0.1:8001"
@@ -9,7 +9,7 @@ set "PYTHON_CMD="
 
 echo.
 echo =====================================================
-echo   SH Market Analyzer V3.7 - Backend Launcher
+echo   SH Market Analyzer V3.8 - Backend Launcher
 echo =====================================================
 
 powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $health=Invoke-RestMethod -Uri '%BACKEND_URL%/api/health' -TimeoutSec 3; if ($health.app -eq 'SH Market Analyzer' -and $health.status -eq 'OK') { Write-Host ('[ONLINE] {0} {1} is already running.' -f $health.app, $health.version); exit 0 }; exit 1"

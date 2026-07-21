@@ -26,6 +26,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  UserRound,
   Waypoints,
   X,
 } from 'lucide-react'
@@ -107,6 +108,7 @@ import {
   signalScore,
   signalTier,
 } from './utils/signalRadar.js'
+import { deriveDiamondRiskGuide } from './utils/diamondRiskGuide.js'
 import { useAuth } from './auth/AuthProvider.jsx'
 
 let chartEnginePromise
@@ -140,8 +142,8 @@ const CHART_MODES = {
 const NO_HISTORY_MESSAGE = 'No candle data available. Start live builder or import recent history.'
 const GAP_MESSAGE = 'History gap detected. Live price is not aligned with local history.'
 const FULL_ANALYSIS_MESSAGE = 'Full analysis requires recent 1D, 4H, 1H, 15M, and 5M candle history.'
-const APP_VERSION = 'V3.7.0'
-const APP_TITLE = 'SH Market Analyzer V3.7 - Diamond Discovery'
+const APP_VERSION = 'V3.8.0'
+const APP_TITLE = 'SH Market Analyzer V3.8 - Adaptive Diamond Intelligence'
 const DEFAULT_LOCKED_MODE = {
   locked_mode: 'NO_DATA_MODE',
   data_mode: 'NO_DATA_MODE',
@@ -718,7 +720,7 @@ function SymbolBadge({ latestPrice, asset = 'XAUUSD' }) {
   const config = MARKET_ASSETS[asset] || MARKET_ASSETS.XAUUSD
   return (
     <div className="symbol-badge">
-      <span>SH Market Analyzer <b>V3.7</b></span>
+      <span>SH Market Analyzer <b>V3.8</b></span>
       <div><strong>{asset}</strong><em>{config.label}</em></div>
       <p>{asPrice(latestPrice)}</p>
     </div>
@@ -757,6 +759,136 @@ function AccountControl() {
       </button>
     </div>
   )
+}
+
+function AccountDrawer({ open, onClose }) {
+  const { user, signOut } = useAuth()
+  const [busy, setBusy] = useState(false)
+  if (!open) return null
+  const name = String(user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'User')
+  const initial = name.trim().charAt(0).toUpperCase() || 'U'
+  const handleSignOut = async () => {
+    setBusy(true)
+    try {
+      await signOut()
+      onClose()
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <aside className="focus-drawer open" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+      <section className="focus-panel account-focus-panel" role="dialog" aria-modal="true" aria-label="Account">
+        <header>
+          <span><UserRound size={15} /> Account</span>
+          <button onClick={onClose} title="Close account"><X size={17} /></button>
+        </header>
+        <div className="account-focus-identity">
+          <i>{initial}</i>
+          <span><strong>{name}</strong><small>{user?.email || 'Signed in'}</small></span>
+        </div>
+        <div className="account-focus-status">
+          <ShieldCheck size={15} />
+          <span><strong>Protected workspace</strong><small>Your market preferences stay connected to this session.</small></span>
+        </div>
+        <button className="account-focus-signout" onClick={handleSignOut} disabled={busy}>
+          <LogOut size={15} /><span>{busy ? 'Signing out' : 'Sign out'}</span>
+        </button>
+      </section>
+    </aside>
+  )
+}
+
+function AlertCenterDrawer({ open, alerts, asset, onAcknowledge, onClose }) {
+  const rows = safeArray(alerts?.alerts)
+  const unread = Number(alerts?.stats?.unread ?? rows.filter(item => !item.acknowledged).length)
+  const [notificationState, setNotificationState] = useState(() => {
+    if (typeof Notification === 'undefined') return 'UNSUPPORTED'
+    return Notification.permission === 'granted' && safeStorageGet('sh-device-alerts', '') === 'enabled' ? 'ENABLED' : Notification.permission.toUpperCase()
+  })
+  if (!open) return null
+  const enableDeviceAlerts = async () => {
+    if (typeof Notification === 'undefined') {
+      setNotificationState('UNSUPPORTED')
+      return
+    }
+    const permission = await Notification.requestPermission()
+    if (permission === 'granted') {
+      localStorage.setItem('sh-device-alerts', 'enabled')
+      setNotificationState('ENABLED')
+    } else {
+      setNotificationState(permission.toUpperCase())
+    }
+  }
+  return (
+    <aside className="focus-drawer open" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+      <section className="focus-panel alert-focus-panel" role="dialog" aria-modal="true" aria-label="Smart Alert Center">
+        <header>
+          <span><Bell size={15} /> Smart Alerts <b>{unread}</b></span>
+          <button onClick={onClose} title="Close alerts"><X size={17} /></button>
+        </header>
+        <div className="alert-focus-preferences">
+          <span><strong>{asset}</strong><small>Grade B+ Diamond, confirmation, news lock and invalidation updates</small></span>
+          <button className={notificationState === 'ENABLED' ? 'active' : ''} onClick={enableDeviceAlerts} disabled={notificationState === 'DENIED'}>
+            {notificationState === 'ENABLED' ? 'Device alerts on' : notificationState === 'DENIED' ? 'Blocked by browser' : 'Enable device alerts'}
+          </button>
+        </div>
+        <div className="alert-focus-list">
+          {rows.length ? rows.map(item => (
+            <article className={`${String(item.priority || 'WATCH').toLowerCase()} ${item.acknowledged ? 'read' : ''}`} key={item.id}>
+              <i><Diamond size={13} /></i>
+              <span>
+                <strong>{item.title || 'Diamond update'}</strong>
+                <small>{timeframeLabel(item.timeframe)} / {String(item.kind || item.priority || 'WATCH').replaceAll('_', ' ')}</small>
+              </span>
+              {!item.acknowledged && <button onClick={() => onAcknowledge?.(item.id)} title="Mark as reviewed"><CheckCircle2 size={15} /></button>}
+            </article>
+          )) : (
+            <div className="alert-focus-empty"><Bell size={18} /><strong>No closed-candle alerts yet</strong><span>Only qualified engine events appear here.</span></div>
+          )}
+        </div>
+        <footer>Alerts are deduplicated and never created from a forming candle.</footer>
+      </section>
+    </aside>
+  )
+}
+
+function MobileFocusNav({ active, unread = 0, onSelect }) {
+  const items = [
+    ['chart', 'Chart', ChartSpline],
+    ['history', 'History', Activity],
+    ['news', 'News', CalendarClock],
+    ['alerts', 'Alerts', Bell],
+    ['account', 'Account', UserRound],
+  ]
+  return (
+    <nav className="mobile-focus-nav" aria-label="Mobile workspace">
+      {items.map(([id, label, Icon]) => (
+        <button className={active === id ? 'active' : ''} onClick={() => onSelect(id)} key={id} aria-label={label}>
+          <Icon size={17} />
+          <span>{label}</span>
+          {id === 'alerts' && unread > 0 && <b>{Math.min(unread, 99)}</b>}
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+function useMarketNotifications(alerts) {
+  const lastAlertRef = useRef('')
+  useEffect(() => {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    if (safeStorageGet('sh-device-alerts', '') !== 'enabled') return
+    const latest = safeArray(alerts?.alerts).find(item => !item.acknowledged)
+    if (!latest?.id || latest.id === lastAlertRef.current) return
+    lastAlertRef.current = latest.id
+    const notification = new Notification(latest.title || 'SH Diamond Update', {
+      body: `${timeframeLabel(latest.timeframe)} / ${String(latest.kind || latest.priority || 'WATCH').replaceAll('_', ' ')}`,
+      icon: '/favicon.svg',
+      tag: `sh-alert-${latest.id}`,
+    })
+    notification.onclick = () => window.focus()
+  }, [alerts])
 }
 
 function DataModeBadge({ mode }) {
@@ -824,11 +956,12 @@ function AppNotice({ error, message, warnings, backendOffline }) {
     )
   }
   if (!error && !message && !items.length) return null
+  const noticeText = publicNotice(error || message || items[0])
   return (
-    <section className={`app-notice ${error ? 'bad' : message ? 'good' : 'warn'}`}>
+    <section className={`app-notice ${error ? 'bad' : message ? 'good' : 'warn'}`} title={noticeText} role="status">
       <div>
         <strong>{error ? 'Action Needed' : message ? 'Update' : 'Data Notice'}</strong>
-        <span>{publicNotice(error || message || items[0])}</span>
+        <span>{noticeText}</span>
       </div>
       {items.length > 1 && <em>+{items.length - 1} more</em>}
     </section>
@@ -1198,6 +1331,7 @@ function derivePersistedDiamondMarkers(candles, history, timeframe) {
       if (!Number.isFinite(markerTime) || !Number.isFinite(markerPrice)) return null
       const qualityScore = clampPercent(diamondHistoricalScore(entry))
       const scoreFloor = diamondVisibleFloor(entry)
+      if (qualityScore < Math.max(60, scoreFloor)) return null
       const grade = entry.peak_diamond_grade || entry.diamond_grade || diamondGradeFromScore(qualityScore, false, scoreFloor)
       const gradeLabel = diamondGradeLabel(grade, qualityScore, scoreFloor)
       const rejected = classification === 'INVALIDATED_CONTEXT'
@@ -1256,25 +1390,80 @@ function deriveCurrentDiamondMarkers(candles, zones) {
   }).filter(Boolean)
 }
 
-function mergeCrystalMarkers(markers) {
+function mergeCrystalMarkers(markers, timeframe = '15M') {
   const merged = new Map()
   const markerRank = marker => marker.marker_kind === 'entry' ? 3 : marker.marker_kind === 'setup' ? 2 : 1
+  const preferMarker = (current, candidate) => {
+    if (!current) return candidate
+    const rank = markerRank(candidate)
+    const currentRank = markerRank(current)
+    const score = Number(candidate.quality_score || candidate.strength || 0)
+    const currentScore = Number(current.quality_score || current.strength || 0)
+    if (rank !== currentRank) return rank > currentRank ? candidate : current
+    if (score !== currentScore) return score > currentScore ? candidate : current
+    return candidate.persistent ? candidate : current
+  }
   markers.forEach(marker => {
     const side = String(marker.entry_side || marker.direction || '').toUpperCase()
     const key = `${Number(marker.time)}:${side}`
-    const current = merged.get(key)
-    const rank = markerRank(marker)
-    const currentRank = markerRank(current || {})
-    if (
-      !current
-      || rank > currentRank
-      || (rank === currentRank && Number(marker.quality_score || marker.strength || 0) > Number(current.quality_score || current.strength || 0))
-      || (rank === currentRank && Number(marker.quality_score || marker.strength || 0) === Number(current.quality_score || current.strength || 0) && marker.persistent)
-    ) {
-      merged.set(key, marker)
-    }
+    merged.set(key, preferMarker(merged.get(key), marker))
   })
-  return [...merged.values()].sort((left, right) => Number(left.time) - Number(right.time))
+
+  const timeframeSeconds = {
+    '1M': 60,
+    '5M': 300,
+    '15M': 900,
+    '1H': 3600,
+    '4H': 14400,
+    '1D': 86400,
+  }[String(timeframe || '15M').toUpperCase()] || 900
+  const clusterBars = {
+    '1M': 15,
+    '5M': 18,
+    '15M': 12,
+    '1H': 8,
+    '4H': 5,
+    '1D': 3,
+  }[String(timeframe || '15M').toUpperCase()] || 12
+  const clusterWindow = timeframeSeconds * clusterBars
+  const clusters = []
+
+  ;[...merged.values()]
+    .sort((left, right) => Number(left.time) - Number(right.time))
+    .forEach(marker => {
+      const side = String(marker.entry_side || marker.direction || '').toUpperCase()
+      const time = Number(marker.time)
+      const price = Number(marker.marker_price ?? marker.line)
+      const cluster = [...clusters].reverse().find(item => {
+        if (item.side !== side || time - item.startTime > clusterWindow) return false
+        if (!Number.isFinite(price) || !Number.isFinite(item.anchorPrice)) return true
+        const scale = Math.max(Math.abs(price), Math.abs(item.anchorPrice), 1)
+        return Math.abs(price - item.anchorPrice) / scale <= 0.0018
+      })
+      if (!cluster) {
+        clusters.push({
+          side,
+          startTime: time,
+          anchorPrice: price,
+          marker,
+          count: 1,
+          hasPersistent: Boolean(marker.persistent),
+        })
+        return
+      }
+      cluster.marker = preferMarker(cluster.marker, marker)
+      cluster.count += 1
+      cluster.hasPersistent = cluster.hasPersistent || Boolean(marker.persistent)
+    })
+
+  return clusters.map(cluster => ({
+    ...cluster.marker,
+    persistent: cluster.hasPersistent,
+    cluster_count: cluster.count,
+    marker_title: cluster.count > 1
+      ? `${cluster.marker.marker_title || 'Diamond zone'} / strongest of ${cluster.count} nearby observations`
+      : cluster.marker.marker_title,
+  })).sort((left, right) => Number(left.time) - Number(right.time))
 }
 
 function MtfMarketMap({ snapshot }) {
@@ -1328,7 +1517,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
     <section className="confidence-engine" aria-label="Confidence Engine diagnostics and strategy governance">
       <header>
         <span><ShieldCheck size={14} /> Confidence Engine</span>
-        <strong>V3.7</strong>
+        <strong>V3.8</strong>
         <em className={summary.tone}>{stageLabel(summary.status)}</em>
         <small>{summary.readinessPassed}/{summary.readinessTotal} execution gates ready</small>
       </header>
@@ -1419,7 +1608,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
           </article>
           <article className="governance-card">
             <span>Champion / Challenger</span>
-            <strong>{String(champion.version || 'DIAMOND_V6.1').replace('DIAMOND_', '')} / {String(challenger.version || 'DIAMOND_V6.2_SHADOW').replace('DIAMOND_', '')}</strong>
+            <strong>{String(champion.version || 'DIAMOND_V7_ADAPTIVE_ASSET_PROFILE').replace('DIAMOND_', '')} / {String(challenger.version || 'DIAMOND_V7.1_SHADOW').replace('DIAMOND_', '')}</strong>
             <small>{summary.challengerResolved}/{summary.promotionMinimum} shadow events resolved</small>
             <i><b style={{ width: `${progress}%` }} /></i>
             <em className={promotion.status === 'ELIGIBLE_FOR_MANUAL_REVIEW' ? 'good' : 'warn'}>{stageLabel(promotion.status || 'shadow only')}</em>
@@ -1607,7 +1796,7 @@ function DiamondHistoryPanel({ history, onReplay, replayKey }) {
                   </div>
                   <strong><Diamond size={11} /> {entry.entry_side} {asPrice(entry.line)}</strong>
                   <small>Zone {asPrice(entry.zone_low)} - {asPrice(entry.zone_high)}</small>
-                  <p><i>E</i>{asPrice(entry.entry_price)} <i>S</i>{asPrice(entry.stop_price)} <i>T</i>{asPrice(entry.target_price)}</p>
+                  <p title="Historical audit levels, not a live trade recommendation"><i>AE</i>{asPrice(entry.entry_price)} <i>AS</i>{asPrice(entry.stop_price)} <i>AT</i>{asPrice(entry.target_price)}</p>
                   <div className="diamond-evidence-facts">
                     <span>{String(evidenceRegime.name || entry.evidence_regime || 'UNKNOWN').replaceAll('_', ' ')}</span>
                     <b>DQ {evidenceDecision.score ?? entry.evidence_decision_score ?? '-'}</b>
@@ -1633,7 +1822,7 @@ function DiamondHistoryPanel({ history, onReplay, replayKey }) {
             })}
           </div>
         ) : (
-          <div className="diamond-history-empty">Diamond V6 lifecycle will begin after the first completed-candle context is preserved.</div>
+          <div className="diamond-history-empty">Diamond V7 proof begins after the first completed-candle context is preserved.</div>
         )}
       </div>
     </section>
@@ -1670,7 +1859,7 @@ function SimpleDiamondHistory({ history, onReplay, replayKey }) {
         <div>
           <span><Diamond size={14} /> Diamond History</span>
           <strong>Every saved zone stays available for review</strong>
-          <small>Wins and losses use later completed candles. Context-only zones are never counted as trades.</small>
+          <small>Wins and losses use fixed audit targets on later completed candles. These are evidence levels, not live TP/SL recommendations.</small>
         </div>
         <div className="diamond-audit-stats">
           <p><span>Saved</span><strong>{stats.total ?? entries.length}</strong></p>
@@ -1713,9 +1902,9 @@ function SimpleDiamondHistory({ history, onReplay, replayKey }) {
                   <em>{String(entry.origin_model || 'STRUCTURAL ZONE').replaceAll('_', ' ')}</em>
                 </div>
                 <div className="diamond-audit-levels">
-                  <p><span>Entry</span><strong>{asPrice(entry.entry_price)}</strong></p>
-                  <p><span>Stop</span><strong>{asPrice(entry.stop_price)}</strong></p>
-                  <p><span>Target</span><strong>{asPrice(entry.target_price)}</strong></p>
+                  <p><span>Audit Entry</span><strong>{asPrice(entry.entry_price)}</strong></p>
+                  <p><span>Audit Stop</span><strong>{asPrice(entry.stop_price)}</strong></p>
+                  <p><span>Audit Target</span><strong>{asPrice(entry.target_price)}</strong></p>
                 </div>
                 <footer>
                   <b className={tone(entry.verification_status)}>{status}</b>
@@ -1881,10 +2070,10 @@ function SetupTrackerPanel({ tracker }) {
   const status = current?.lifecycle_status || 'NO_TRACKED_SETUP'
   const statusTone = ['WON', 'OPEN'].includes(status) ? 'good' : ['LOST'].includes(status) ? 'bad' : ['WAITING_ENTRY', 'AMBIGUOUS'].includes(status) ? 'warn' : ''
   return (
-    <section className="setup-tracker" aria-label="Verified Diamond V6 outcome tracker">
+    <section className="setup-tracker" aria-label="Verified Diamond V7 outcome tracker">
       <header>
         <span>Diamond Tracker</span>
-        <strong>V6 confirmed entries only</strong>
+        <strong>V7 confirmed entries only</strong>
         <em>Closed candle verified</em>
       </header>
       <div className="setup-tracker-stats">
@@ -1908,7 +2097,7 @@ function SetupTrackerPanel({ tracker }) {
         </div>
       ) : (
         <div className="setup-tracker-empty">
-          No confirmed Diamond V6 entry yet. Context zones and generic limit candidates are not counted as wins or losses.
+          No confirmed Diamond V7 entry yet. Context zones and generic limit candidates are not counted as wins or losses.
         </div>
       )}
     </section>
@@ -2183,7 +2372,7 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
   ) {
     return (
       <section className="diamond-zone-panel waiting">
-        <header><Diamond size={16} /><span><small>SH Diamond Zone V6.7</small><strong>Scanning completed-candle zones</strong></span></header>
+        <header><Diamond size={16} /><span><small>SH Lead Diamond V7</small><strong>Scanning for one Grade B+ zone</strong></span></header>
       </section>
     )
   }
@@ -2232,7 +2421,7 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
     <section className={`diamond-zone-panel ${contextTone} ${precision.status === 'READY' ? 'precision' : ''}`} aria-label="SH Diamond Zone strategy context">
       <header>
         <Diamond className="diamond-zone-icon" size={16} />
-        <span><small>SH Diamond Zone V6.7</small><strong>{displayRole}</strong></span>
+        <span><small>SH Lead Diamond V7</small><strong>{displayRole}</strong></span>
         <b title={`Diamond Grade ${diamondGrade}/${diamondScore}; ${confidenceTier}; origin ${quality}/${effectiveScore}; XAU validation ${precision.quality_grade || '-'}/${precision.validation_score ?? '-'}`}>{diamondGrade} / {diamondScore}</b>
         <em>{state} / {primary.role} / {lifecycle} / {keyZones.feed_matched ? 'MATCHED' : 'RESEARCH'} / {keyZones.profile_label || keyZones.profile || 'STANDARD'}</em>
       </header>
@@ -2256,7 +2445,7 @@ function IntelligenceDock({ activeTab, onTab, collapsed, onToggle, analysis, tra
   const tabs = [
     { id: 'setup', label: 'Trade Plan', icon: ListChecks, value: trackerStats.active ?? 0, signed: false },
     { id: 'market', label: 'Key Zones', icon: Layers3, value: snapshot?.confluence_score ?? 0, signed: true },
-    { id: 'journal', label: 'History', icon: Activity, value: historyStats.total ?? 0, signed: false },
+    { id: 'journal', label: 'Proof', icon: Activity, value: historyStats.total ?? 0, signed: false },
   ]
   return (
     <section className={`intelligence-dock ${collapsed ? 'collapsed' : 'expanded'}`}>
@@ -2309,7 +2498,7 @@ function IntelligenceDock({ activeTab, onTab, collapsed, onToggle, analysis, tra
   )
 }
 
-function DiamondStatusBar({ signal, decision, nextGate, detailsOpen, onDetails, onHistory }) {
+function DiamondStatusBar({ signal, decision, nextGate, riskGuide, adaptiveProfile, detailsOpen, onDetails, onHistory }) {
   const score = signal ? signalScore(signal) : 0
   const grade = signal ? signal.diamond_grade || diamondGradeFromScore(score, false, diamondVisibleFloor(signal)) : ''
   const rawSide = String(signal?.entry_side || signal?.direction || '').toUpperCase()
@@ -2317,12 +2506,16 @@ function DiamondStatusBar({ signal, decision, nextGate, detailsOpen, onDetails, 
   const zonePrice = signal?.line ?? signal?.marker_price
   const origin = String(signal?.origin_model || 'Scanning').replaceAll('_', ' ')
   const lifecycle = String(signal?.lifecycle || 'Watching').replaceAll('_', ' ')
+  const regime = String(adaptiveProfile?.regime || 'WAITING').replaceAll('_', ' ')
   return (
     <section className={`diamond-status-bar ${side.toLowerCase()}`} aria-label="Diamond Zone status">
       <div className="diamond-status-decision">
         <span><Diamond size={13} /> Diamond Zone</span>
         <strong>{decision}</strong>
-        <small>Next: {nextGate}</small>
+        <small className="diamond-status-next">Next: {nextGate} / V7 {regime}</small>
+        <small className="diamond-status-mobile-risk">
+          SL {asPrice(riskGuide?.invalidation)} / TP {riskGuide?.targetLabel ? `${riskGuide.targetLabel} ${asPrice(riskGuide.target)}` : 'waiting'}
+        </small>
       </div>
       <div className="diamond-status-signal">
         <span className={side.toLowerCase()}>{side}</span>
@@ -2330,20 +2523,20 @@ function DiamondStatusBar({ signal, decision, nextGate, detailsOpen, onDetails, 
         <b>{score || 0}%</b>
       </div>
       <div className="diamond-status-context">
-        <p><span>Key Zone</span><strong>{asPrice(zonePrice)}</strong></p>
-        <p><span>Origin</span><strong>{origin}</strong></p>
-        <p><span>State</span><strong>{lifecycle}</strong></p>
-        <p><span>Next</span><strong>{nextGate || 'Watching closed candles'}</strong></p>
+        <p title="SL belongs beyond the Engine invalidation boundary, not directly on the Diamond icon."><span>SL Boundary</span><strong className="risk">{asPrice(riskGuide?.invalidation)}</strong></p>
+        <p title={`${riskGuide?.method || 'Waiting for the next structural level'}${riskGuide?.riskReward ? ` Structural R:R 1:${riskGuide.riskReward}.` : ''}`}><span>TP Objective</span><strong className="target">{riskGuide?.targetLabel ? `${riskGuide.targetLabel} ${asPrice(riskGuide.target)}` : 'Waiting level map'}</strong></p>
+        <p title={`${origin} / ${lifecycle} / V7 ${regime} / Diamond ${asPrice(zonePrice)}`}><span>Next Gate</span><strong>{nextGate || 'Watching closed candles'}</strong></p>
       </div>
       <div className="diamond-status-actions">
-        <button onClick={onHistory} title="Open preserved Diamond history"><ChartSpline size={14} /><span>History</span></button>
+        <button onClick={onHistory} title="Open preserved Diamond proof"><ChartSpline size={14} /><span>Proof</span></button>
         <button className={detailsOpen ? 'active' : ''} onClick={onDetails} title={detailsOpen ? 'Close panels' : 'Open panels'}><Layers3 size={14} /><span>Panels</span></button>
       </div>
     </section>
   )
 }
 
-function SignalChartView({ asset, timeframe, timeframeTransition, chartData, overlays, panels, analysis, providerAlignment, liveSync, mtfSnapshot, diamondHistory, diamondValidation, strategyGovernance, marketAlerts, validationLoading, setupTracker, sessionFramework, keyZones, newsIntelligence, onRunValidation, onAcknowledgeAlert, onTimeframe, onTradingView }) {
+function SignalChartView({ asset, timeframe, timeframeTransition, chartData, overlays, panels, analysis, providerAlignment, liveSync, mtfSnapshot, diamondHistory, diamondValidation, strategyGovernance, marketAlerts, validationLoading, setupTracker, sessionFramework, keyZones, newsIntelligence, focusRequest, onRunValidation, onAcknowledgeAlert, onTimeframe, onTradingView, onNews }) {
+  const sectionRef = useRef(null)
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const candleSeriesRef = useRef(null)
@@ -2376,7 +2569,9 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     if (!feedTrusted) return []
     const primary = safeObject(keyZones?.primary_zone)
     const visibleDiamondFloor = diamondVisibleFloor(keyZones, primary)
-    const sourceZones = Array.isArray(keyZones?.visible_zones) ? keyZones.visible_zones : safeArray(keyZones?.zones)
+    const sourceZones = Array.isArray(keyZones?.live_zones)
+      ? keyZones.live_zones
+      : Array.isArray(keyZones?.visible_zones) ? keyZones.visible_zones : safeArray(keyZones?.zones)
     const visible = sourceZones.filter(zone => (
       zone?.id
       && zone.display_as_diamond !== false
@@ -2386,7 +2581,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     const visiblePrimary = visible.find(zone => zone.id === primary.id)
     const remaining = visible.filter(zone => zone.id !== visiblePrimary?.id)
     const zones = visiblePrimary ? [visiblePrimary, ...remaining] : visible
-    return zones.slice(0, 14).map(zone => ({ ...zone, isPrimary: zone.id === primary.id }))
+    return zones.slice(0, 1).map(zone => ({ ...zone, isPrimary: zone.id === primary.id }))
   }, [keyZones, feedTrusted])
   const diamondEntryEvents = useMemo(
     () => feedTrusted ? safeArray(keyZones?.entry_events)
@@ -2422,14 +2617,25 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     })),
     ...currentDiamondMarkers,
     ...persistedDiamondMarkers,
-  ]), [diamondEntryEvents, currentDiamondMarkers, persistedDiamondMarkers])
+  ], timeframe), [diamondEntryEvents, currentDiamondMarkers, persistedDiamondMarkers, timeframe])
+  const savedDiamondHistoryCount = useMemo(
+    () => safeArray(diamondHistory?.entries).filter(
+      entry => String(entry?.timeframe || '').toUpperCase() === String(timeframe || '').toUpperCase(),
+    ).length,
+    [diamondHistory, timeframe],
+  )
   const crystalSummary = useMemo(() => ({
     total: crystalMarkers.length,
-    saved: crystalMarkers.filter(marker => marker.persistent).length,
-  }), [crystalMarkers])
+    saved: savedDiamondHistoryCount,
+  }), [crystalMarkers, savedDiamondHistoryCount])
   const primarySignal = keyZones?.entry_event_status === 'CONFIRMED_ENTRY' && diamondEntryEvents.length
     ? diamondEntryEvents[diamondEntryEvents.length - 1]
     : diamondContextZones[0] || null
+  const latestCandlePrice = Number(candles[candles.length - 1]?.close)
+  const diamondRiskGuide = useMemo(
+    () => deriveDiamondRiskGuide(primarySignal, keyZones, sessionFramework, latestCandlePrice),
+    [primarySignal, keyZones, sessionFramework, latestCandlePrice],
+  )
   levelsRef.current = levels
   diamondContextZonesRef.current = diamondContextZones
   const panelData = feedTrusted ? safeObject(panels?.indicator_panels) : {}
@@ -2441,6 +2647,23 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
   const candleAudit = safeObject(liveSync?.history_provenance?.audit)
   const decisionQuality = safeObject(analysis?.decision_quality)
   const newsEvent = safeObject(newsIntelligence?.primary_event)
+
+  useEffect(() => {
+    if (!focusRequest?.id) return
+    if (focusRequest.target === 'history') {
+      setDockTab('journal')
+      setDockCollapsed(false)
+    } else if (focusRequest.target === 'chart') {
+      setDockCollapsed(true)
+    }
+    const frame = requestAnimationFrame(() => {
+      const target = focusRequest.target === 'history'
+        ? sectionRef.current?.querySelector('.intelligence-dock')
+        : sectionRef.current
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusRequest])
   const decision = !feedTrusted
     ? 'Waiting for Matched Data'
     : newsIntelligence?.execution_gate === 'BLOCK_NEW_ENTRIES'
@@ -2697,7 +2920,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
   }, [candles, replayEntry, timeframe, chartReady])
 
   return (
-    <section className="signal-view">
+    <section className="signal-view" ref={sectionRef}>
       <header className="signal-view-toolbar">
         <div className="signal-view-symbol">
           <strong>{asset}</strong>
@@ -2711,13 +2934,13 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
         </div>
         <div
           className="signal-crystal-guide"
-          title="Buy and Sell Diamond key zones, including saved historical zones."
-          aria-label={`${crystalSummary.total} Diamond key zones on chart, ${crystalSummary.saved} restored from saved history`}
+          title="The chart groups nearby Diamonds and keeps the strongest one. Complete evidence remains in History."
+          aria-label={`${crystalSummary.total} grouped Diamond key zones on chart, ${crystalSummary.saved} complete records in history`}
         >
           <span className="buy"><Diamond size={11} />Buy Zone</span>
           <span className="sell"><Diamond size={11} />Sell Zone</span>
           <b>{crystalSummary.total} on chart</b>
-          <em>{crystalSummary.saved} saved history</em>
+          <em>{crystalSummary.saved} in history</em>
         </div>
         <div className="signal-view-timeframes">
           {['5M', '15M', '1H', '4H', '1D'].map(item => (
@@ -2751,6 +2974,8 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
         signal={primarySignal}
         decision={decision}
         nextGate={nextGate}
+        riskGuide={diamondRiskGuide}
+        adaptiveProfile={keyZones?.adaptive_profile}
         detailsOpen={!dockCollapsed}
         onDetails={() => setDockCollapsed(value => !value)}
         onHistory={() => {
@@ -2777,6 +3002,13 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
           </span>
           <i />
         </div>
+        {['HIGH', 'ELEVATED'].includes(String(newsIntelligence?.risk_level || '').toUpperCase()) && (
+          <button className={`signal-news-chip ${String(newsIntelligence?.risk_level).toLowerCase()}`} onClick={onNews} title={newsEvent.title || 'Open market calendar'}>
+            <CalendarClock size={12} />
+            <span>{newsIntelligence.risk_level}</span>
+            <strong>{newsEvent.countdown || formatNewsTime(newsEvent.timestamp)}</strong>
+          </button>
+        )}
         {replayEntry && (
           <div className="signal-replay-state" role="status">
             <ChartSpline size={13} />
@@ -4599,6 +4831,10 @@ export default function App() {
   const [overlayMenuOpen, setOverlayMenuOpen] = useState(false)
   const [analysisDrawerOpen, setAnalysisDrawerOpen] = useState(false)
   const [fixGapOpen, setFixGapOpen] = useState(false)
+  const [alertCenterOpen, setAlertCenterOpen] = useState(false)
+  const [accountPanelOpen, setAccountPanelOpen] = useState(false)
+  const [mobileFocus, setMobileFocus] = useState('chart')
+  const [mobileFocusRequest, setMobileFocusRequest] = useState(null)
   const [wizardResult, setWizardResult] = useState(null)
   const [boot, setBoot] = useState({ phase: 'STARTING', slow: false, continueOffline: false })
   const [showStaleHistory, setShowStaleHistory] = useState(false)
@@ -4615,6 +4851,7 @@ export default function App() {
   const chartViewCacheRef = useRef(new Map())
   const chartViewPrefetchRef = useRef(new Map())
   const viewSelectionRef = useRef({ asset, timeframe, tradingStyle })
+  useMarketNotifications(marketAlerts)
 
   const counts = safeObject(dataReadiness?.candle_counts || status?.candle_counts)
   const lockedMode = dataMode?.data_mode_lock || dataReadiness?.data_mode_lock || chartData?.data_mode_lock || dataMode || DEFAULT_LOCKED_MODE
@@ -5294,6 +5531,24 @@ export default function App() {
     setMobileTab('live')
   }
 
+  function handleMobileFocus(target) {
+    setMobileFocus(target)
+    if (target === 'chart' || target === 'history') {
+      handleChartMode('signal')
+      setMobileFocusRequest({ target, id: Date.now() })
+      return
+    }
+    if (target === 'news') {
+      setNewsCalendarOpen(true)
+      return
+    }
+    if (target === 'alerts') {
+      setAlertCenterOpen(true)
+      return
+    }
+    if (target === 'account') setAccountPanelOpen(true)
+  }
+
   async function handleAsset(nextAsset) {
     const normalized = MARKET_ASSETS[nextAsset] ? nextAsset : 'XAUUSD'
     viewSelectionRef.current = { asset: normalized, timeframe, tradingStyle }
@@ -5795,10 +6050,12 @@ export default function App() {
           sessionFramework={sessionFramework || activeAnalysis?.session_framework}
           keyZones={keyZones || activeAnalysis?.key_zones}
           newsIntelligence={newsIntelligence || activeAnalysis?.news_intelligence}
+          focusRequest={mobileFocusRequest}
           onRunValidation={validateDiamondEvidence}
           onAcknowledgeAlert={handleAcknowledgeAlert}
           onTimeframe={handleTimeframe}
           onTradingView={() => handleChartMode('tradingview')}
+          onNews={() => setNewsCalendarOpen(true)}
         />
       )}
 
@@ -5898,6 +6155,12 @@ export default function App() {
         <em className={`data-mode-mini ${tone(activeProviderAlignment?.matched === false ? 'RESEARCH_ONLY' : lockedMode.locked_mode)}`}>{activeProviderAlignment?.matched === false ? 'RESEARCH' : lockedMode.data_mode_label || dataReadiness?.data_mode_label || 'NO DATA'}</em>
       </div>
 
+      <MobileFocusNav
+        active={mobileFocus}
+        unread={Number(marketAlerts?.stats?.unread ?? safeArray(marketAlerts?.alerts).filter(item => !item.acknowledged).length)}
+        onSelect={handleMobileFocus}
+      />
+
       <WeeklyNewsDrawer
         open={newsCalendarOpen}
         asset={asset}
@@ -5907,6 +6170,16 @@ export default function App() {
         onRefresh={() => loadNewsCalendar(true)}
         onClose={() => setNewsCalendarOpen(false)}
       />
+
+      <AlertCenterDrawer
+        open={alertCenterOpen}
+        alerts={marketAlerts}
+        asset={asset}
+        onAcknowledge={handleAcknowledgeAlert}
+        onClose={() => setAlertCenterOpen(false)}
+      />
+
+      <AccountDrawer open={accountPanelOpen} onClose={() => setAccountPanelOpen(false)} />
 
       <MobileMenuDrawer
         open={menuOpen}

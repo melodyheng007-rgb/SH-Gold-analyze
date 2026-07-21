@@ -1,6 +1,6 @@
-# SH Market Analyzer V3.7
+# SH Market Analyzer V3.8
 
-## V3.7 Diamond Discovery
+## V3.8 Adaptive Diamond Intelligence
 
 - Diamond History is append-only and exposes wins, losses, open zones, invalidated zones, and chart replay.
 - Grade D or better structural Diamond Zones are displayed without Active/Balanced/Precision modes.
