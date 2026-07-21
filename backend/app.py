@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 
@@ -32,6 +33,7 @@ from engine.market_regime import MarketRegimeEngine
 from engine.signal_alerts import ClosedCandleAlerts
 from engine.xau_confluence import XAUPrecisionConfluenceEngine
 from engine.data_integrity import DataIntegrityEngine
+from engine.data_loader import candles_to_records
 from engine.data_mode_lock import DataModeLockService
 from engine.engine_core import EngineCore
 from engine.institutional_analysis import InstitutionalAnalysisEngineV4
@@ -79,8 +81,8 @@ from engine.xauusd_provider import (
     normalize_timeframe,
 )
 
-APP_VERSION = "3.8.0"
-APP_VERSION_LABEL = "V3.8"
+APP_VERSION = "3.8.1"
+APP_VERSION_LABEL = "V3.8.1"
 APP_DESCRIPTION = "Diamond Discovery Trading OS"
 MARKET_VISUAL_SYMBOLS = {
     "XAUUSD": "OANDA:XAUUSD",
@@ -127,7 +129,13 @@ async def require_authenticated_api(request: Request, call_next):
             status_code=exc.status_code,
             content={"error": exc.message, "code": exc.code},
         )
-    if auth_guard.requires_admin(request.url.path) and request.state.auth_user.get("app_role") != "admin":
+    client_host = request.client.host if request.client else None
+    local_owner_allowed = auth_guard.permits_local_owner(client_host)
+    if (
+        auth_guard.requires_admin(request.url.path)
+        and request.state.auth_user.get("app_role") != "admin"
+        and not local_owner_allowed
+    ):
         return JSONResponse(
             status_code=403,
             content={"error": "Administrator access is required.", "code": "ADMIN_REQUIRED"},
@@ -135,6 +143,12 @@ async def require_authenticated_api(request: Request, call_next):
     return await call_next(request)
 
 settings = ProviderSettings(SETTINGS_FILE)
+
+
+def _configured_xau_source() -> str:
+    return OANDA_HISTORY_SOURCE
+
+
 analysis_journal = AnalysisJournal(ANALYSIS_JOURNAL_DB)
 setup_tracker = SetupTracker(ANALYSIS_JOURNAL_DB)
 diamond_history = DiamondHistory(ANALYSIS_JOURNAL_DB)
@@ -167,22 +181,38 @@ candle_store = SQLiteCandleStore(SQLITE_DB)
 history_seeder = CandleHistorySeeder(candle_store, HISTORY_DIR)
 gap_detector = CandleGapDetector(candle_store)
 live_builder = LiveCandleBuilderService(settings, candle_store)
-candle_health_service = CandleHealthService(candle_store, live_builder.candle_builder)
+candle_health_service = CandleHealthService(
+    candle_store,
+    live_builder.candle_builder,
+    _configured_xau_source,
+)
 candle_quality_validator = CandleEngineQualityValidator(candle_store)
 csv_provider = CSVBacktestProvider(SAMPLE_CSV, UPLOAD_CSV)
 engine_core = EngineCore(candle_store)
-data_integrity_engine = DataIntegrityEngine(candle_store)
+data_integrity_engine = DataIntegrityEngine(candle_store, _configured_xau_source)
 test_history_generator = TestHistoryGenerator(candle_store)
 test_history_generator_v2 = RealisticTestHistoryGeneratorV2(candle_store)
 csv_import_pro = CSVImportProService(candle_store)
 recent_history_sync = RecentHistorySyncService(candle_store, RECENT_HISTORY_DIR)
 recent_history_resolver = RecentHistoryResolver(candle_store)
 gap_diagnosis_service = DataGapDiagnosisService(candle_store)
-data_mode_lock = DataModeLockService(candle_store, settings)
+data_mode_lock = DataModeLockService(
+    candle_store,
+    settings,
+    preferred_source=_configured_xau_source,
+)
 twelve_data_history = TwelveDataHistoryService(settings, candle_store)
 oanda_history = OandaHistoryService(settings, candle_store)
-pro_analysis_engine = ProAnalysisEngineV3(candle_store, engine_core.cache)
-institutional_engine_v4 = InstitutionalAnalysisEngineV4(candle_store, engine_core.cache)
+pro_analysis_engine = ProAnalysisEngineV3(
+    candle_store,
+    engine_core.cache,
+    preferred_source=_configured_xau_source,
+)
+institutional_engine_v4 = InstitutionalAnalysisEngineV4(
+    candle_store,
+    engine_core.cache,
+    preferred_source=_configured_xau_source,
+)
 btc_candle_store = SQLiteCandleStore(BTC_SQLITE_DB)
 btc_data_integrity_engine = DataIntegrityEngine(btc_candle_store)
 btc_engine_core = EngineCore(btc_candle_store)
@@ -201,7 +231,7 @@ btc_institutional_engine_v4 = InstitutionalAnalysisEngineV4(
 )
 auto_analysis_lock = threading.Lock()
 auto_analysis_state: Dict[str, Dict[str, Any]] = {}
-oanda_history_sync_lock = threading.Lock()
+xau_history_sync_lock = threading.Lock()
 oanda_restore_state: Dict[str, Any] = {
     "status": "PENDING" if settings.get("oanda_api_token") else "NOT_CONFIGURED",
     "running": False,
@@ -394,6 +424,9 @@ def api_health():
         "backend_status": "ONLINE",
         "authentication": auth_guard.status(),
         "market_feed": {
+            "active_provider": "OANDA",
+            "visual_symbol": _market_visual_symbol("XAUUSD"),
+            "expected_source": _expected_market_source("XAUUSD"),
             "oanda_configured": oanda_configured,
             "oanda_environment": settings.get("oanda_environment") or "practice",
             "restore_status": oanda_restore_state.get("status"),
@@ -447,6 +480,25 @@ def _normalize_market_symbol(symbol: str) -> str:
     if normalized not in MARKET_VISUAL_SYMBOLS:
         raise ValueError("symbol must be XAUUSD or BTCUSD")
     return normalized
+
+
+def _active_xau_history_service():
+    return oanda_history
+
+
+def _expected_market_source(symbol: str) -> str:
+    normalized = _normalize_market_symbol(symbol)
+    return _configured_xau_source() if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+
+
+def _market_visual_symbol(symbol: str) -> str:
+    normalized = _normalize_market_symbol(symbol)
+    return MARKET_VISUAL_SYMBOLS[normalized]
+
+
+def _expected_market_provider(symbol: str):
+    normalized = _normalize_market_symbol(symbol)
+    return _active_xau_history_service() if normalized == "XAUUSD" else binance_history
 
 
 def _normalize_trading_style(value: str) -> str:
@@ -935,6 +987,7 @@ def xauusd_provider_status():
     return live_builder.status() | {
         "settings": settings.masked_status(),
         "oanda_restore": dict(oanda_restore_state),
+        "provider_restore": dict(oanda_restore_state),
         "minimum_required": MIN_ANALYSIS_CANDLES,
         "data_readiness": xauusd_data_readiness(),
     }
@@ -947,6 +1000,7 @@ async def xauusd_provider_credentials():
         "status": "OK",
         "settings": settings.masked_status(),
         "oanda_restore": dict(oanda_restore_state),
+        "provider_restore": dict(oanda_restore_state),
     }
 
 
@@ -1292,7 +1346,7 @@ def market_overview(mode: str = Query("balanced")):
             explanation = analysis.get("analysis_explanation") or {}
             assets.append({
                 "symbol": symbol,
-                "visual_symbol": MARKET_VISUAL_SYMBOLS[symbol],
+                "visual_symbol": _market_visual_symbol(symbol),
                 "price": analysis.get("current_price"),
                 "bias": analysis.get("bias") or "No Clear Bias",
                 "decision": analysis.get("final_decision") or "Waiting for Data",
@@ -1336,8 +1390,8 @@ def market_signal_view(
         sync = _sync_market_chart_history(normalized, tf) if refresh_market else {
             "ok": True,
             "status": "CACHED_ANALYSIS",
-            "source": OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE,
-            "provider": oanda_history.provider_name if normalized == "XAUUSD" else binance_history.provider_name,
+            "source": _expected_market_source(normalized),
+            "provider": _expected_market_provider(normalized).provider_name,
             "message": "Analyzing the cached matched feed while live candle sync continues in the background.",
         }
         integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
@@ -1369,7 +1423,7 @@ def market_signal_view(
             tf,
             champion_validation,
         )
-        expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+        expected_source = _expected_market_source(normalized)
         analysis["feed_reconciliation"] = feed_reconciliation_engine.evaluate(
             normalized,
             tf,
@@ -1401,7 +1455,7 @@ def market_signal_view(
         return {
             "status": "OK",
             "symbol": normalized,
-            "visual_symbol": MARKET_VISUAL_SYMBOLS[normalized],
+            "visual_symbol": _market_visual_symbol(normalized),
             "timeframe": tf,
             "trading_style": style,
             "chart_data": chart,
@@ -1442,14 +1496,21 @@ def market_chart_snapshot(
         chart["symbol"] = normalized
         source = chart.get("data_integrity", {}).get("chart_source")
         alignment = _provider_alignment(normalized, source)
+        panels = _verifiable_indicator_panels(
+            integrity_engine,
+            normalized,
+            tf,
+            min(limit, 300),
+            _locked_market_data_mode(normalized),
+        )
         return {
             "status": "CACHED_SNAPSHOT",
             "symbol": normalized,
-            "visual_symbol": MARKET_VISUAL_SYMBOLS[normalized],
+            "visual_symbol": _market_visual_symbol(normalized),
             "timeframe": tf,
             "chart_data": chart,
             "overlays": {"status": "REFRESHING", "symbol": normalized, "overlays": {}, "overlay_status": {}},
-            "panels": {"status": "REFRESHING", "symbol": normalized, "indicator_panels": {}},
+            "panels": panels,
             "provider_alignment": alignment,
             "history_provenance": {
                 "source": source,
@@ -1458,6 +1519,106 @@ def market_chart_snapshot(
                 "snapshot_only": True,
             },
             "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        }
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.get("/api/market/candle-tick")
+def market_candle_tick(
+    symbol: str = Query("XAUUSD"),
+    timeframe: str = Query("15M"),
+    trade_style: str = Query("SCALPING"),
+):
+    """Return a small live candle delta; full panels stay on the snapshot route."""
+    started = time.perf_counter()
+    try:
+        normalized = _normalize_market_symbol(symbol)
+        tf = normalize_timeframe(timeframe)
+        style = _normalize_trading_style(trade_style)
+        sync = _sync_market_chart_candle(normalized, tf)
+        store = candle_store if normalized == "XAUUSD" else btc_candle_store
+        expected_source = _expected_market_source(normalized)
+        source = sync.get("source") or expected_source
+        frame = store.get_candles_df(tf, 12, {source})
+        if frame.empty and source != expected_source:
+            source = expected_source
+            frame = store.get_candles_df(tf, 12, {source})
+        records = candles_to_records(frame, 12)
+        alignment = _provider_alignment(normalized, source, sync)
+        chart_delta = {
+            "symbol": normalized,
+            "timeframe": tf,
+            "source": source,
+            "candles": records,
+            "segments": {"active": records},
+            "latest_live_price": records[-1].get("close") if records else None,
+            "data_integrity": {
+                "chart_source": source,
+                "analysis_allowed": alignment.get("matched"),
+            },
+        }
+        auto_scan = _auto_analyze_market_tick_if_due(normalized, tf, chart_delta, style)
+        analysis = auto_scan.get("analysis") if auto_scan.get("ran") else None
+        setup_snapshot = None
+        diamond_snapshot = None
+        panel_snapshot = None
+        if auto_scan.get("ran"):
+            integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
+            panel_snapshot = _verifiable_indicator_panels(
+                integrity_engine,
+                normalized,
+                tf,
+                300,
+                _locked_market_data_mode(normalized),
+            )
+            _refresh_tracked_setups(normalized)
+            _reconcile_diamond_history(normalized)
+            setup_snapshot = {
+                "status": "OK",
+                "symbol": normalized,
+                "model": "DIAMOND_V6_AUTO",
+                "setups": setup_tracker.list(normalized, 20, "DIAMOND_V6_AUTO"),
+                "stats": setup_tracker.stats(normalized, "DIAMOND_V6_AUTO"),
+                "overall_stats": setup_tracker.stats(normalized),
+            }
+            diamond_snapshot = {
+                "status": "OK",
+                "symbol": normalized,
+                "strategy": "SH_DIAMOND_ZONE_V6_SIMPLE_DISCOVERY",
+                "entries": diamond_history.list(normalized, 200),
+                "stats": diamond_history.stats(normalized),
+            }
+        auto_status = {key: value for key, value in auto_scan.items() if key != "analysis"}
+        endpoint_elapsed_ms = round((time.perf_counter() - started) * 1000)
+        return {
+            "status": "OK" if sync.get("ok") else "DEGRADED",
+            "symbol": normalized,
+            "timeframe": tf,
+            "trading_style": style,
+            "chart_delta": chart_delta,
+            "analysis": analysis,
+            "panels": panel_snapshot,
+            "auto_analysis": auto_status,
+            "session_framework": (analysis or {}).get("session_framework"),
+            "key_zones": (analysis or {}).get("key_zones"),
+            "news_intelligence": (analysis or {}).get("news_intelligence"),
+            "setup_tracker": setup_snapshot,
+            "diamond_history": diamond_snapshot,
+            "live_sync": sync | {
+                "poll_after_ms": 3500 if normalized == "BTCUSD" else 2500 if alignment["matched"] else 15000,
+                "freshness_state": "LIVE" if sync.get("ok") and alignment["matched"] else "FALLBACK" if sync.get("ok") else "PAUSED",
+                "endpoint_elapsed_ms": endpoint_elapsed_ms,
+                "payload_candles": len(records),
+                "stream_mode": "CANDLE_DELTA",
+                "analysis_uses_completed_candles_only": True,
+            },
+            "provider_alignment": alignment,
+            "history_provenance": {
+                "source": source,
+                "snapshot_only": True,
+                "stream_mode": "CANDLE_DELTA",
+            },
         }
     except Exception as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -1495,10 +1656,11 @@ def market_chart_live(
         source = chart.get("data_integrity", {}).get("chart_source") or sync.get("source")
         alignment = _provider_alignment(normalized, source, sync)
         analysis = auto_scan.get("analysis") or {}
-        session = analysis.get("session_framework") or _market_session_framework(normalized, tf)
-        key_zones = analysis.get("key_zones") or _market_key_zones(normalized, tf, chart, analysis or None, session, style)
+        session = analysis.get("session_framework")
         news_intelligence = analysis.get("news_intelligence") or news_intelligence_engine.snapshot(normalized)
-        _refresh_tracked_setups(normalized)
+        key_zones = analysis.get("key_zones")
+        if auto_scan.get("ran"):
+            _refresh_tracked_setups(normalized)
         tracker_snapshot = {
             "status": "OK",
             "symbol": normalized,
@@ -1520,7 +1682,7 @@ def market_chart_live(
         return {
             "status": "OK" if sync.get("ok") else "DEGRADED",
             "symbol": normalized,
-            "visual_symbol": MARKET_VISUAL_SYMBOLS[normalized],
+            "visual_symbol": _market_visual_symbol(normalized),
             "timeframe": tf,
             "trading_style": style,
             "chart_data": chart,
@@ -1533,7 +1695,16 @@ def market_chart_live(
             "setup_tracker": tracker_snapshot,
             "diamond_history": diamond_snapshot,
             "live_sync": sync | {
-                "poll_after_ms": 5000 if normalized == "BTCUSD" else 10000 if alignment["matched"] else 30000,
+                "poll_after_ms": (
+                    3500 if normalized == "BTCUSD"
+                    else 2500 if alignment["matched"]
+                    else 15000
+                ),
+                "freshness_state": (
+                    "LIVE" if sync.get("ok") and alignment["matched"]
+                    else "FALLBACK" if sync.get("ok")
+                    else "PAUSED"
+                ),
                 "analysis_uses_completed_candles_only": True,
                 "manual_analysis_required": False,
             },
@@ -1563,7 +1734,7 @@ def market_mtf_snapshot(symbol: str = Query("XAUUSD")):
             if ready
             else 0
         )
-        expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+        expected_source = _expected_market_source(normalized)
         sources_matched = bool(ready) and all(row.get("source") == expected_source for row in ready)
         bias = "BULLISH" if weighted_score >= 25 else "BEARISH" if weighted_score <= -25 else "MIXED"
         return {
@@ -1753,7 +1924,7 @@ def run_market_diamond_validation(payload: DiamondValidationPayload):
             "status": "CACHED_PROVIDER_HISTORY",
         }
         store = candle_store if normalized == "XAUUSD" else btc_candle_store
-        expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+        expected_source = _expected_market_source(normalized)
         frame = store.get_candles_df(tf, lookback, {expected_source})
         candles = []
         for timestamp, row in frame.iterrows():
@@ -2193,26 +2364,27 @@ def _restore_saved_oanda_feed() -> None:
 
 
 def _sync_live_visual_analysis_history() -> Dict[str, Any]:
-    with oanda_history_sync_lock:
+    with xau_history_sync_lock:
         return _sync_live_visual_analysis_history_unlocked()
 
 
 def _sync_live_visual_analysis_history_unlocked() -> Dict[str, Any]:
     """Refresh real OHLC data used by the TradingView-live visual workflow."""
     timeframes = ["5M", "15M", "1H", "4H", "1D"]
-    primary = oanda_history.sync_recent_history(timeframes)
+    primary_service = _active_xau_history_service()
+    primary = primary_service.sync_recent_history(timeframes)
     if primary.get("ok"):
         sync = primary
     else:
         fallback = twelve_data_history.sync_recent_history(timeframes)
         sync = fallback | {
-            "primary_provider": oanda_history.provider_name,
+            "primary_provider": primary_service.provider_name,
             "primary_status": primary.get("status"),
             "primary_message": primary.get("message"),
         }
     if sync.get("ok"):
         active_source = sync.get("source") or TWELVE_DATA_HISTORY_SOURCE
-        if active_source == OANDA_HISTORY_SOURCE:
+        if active_source == _configured_xau_source():
             archived = candle_store.archive_sources({PRELOADED_SOURCE, WARMUP_SOURCE})
             sync["stale_history_archived"] = archived
             sync["stale_history_archived_total"] = sum(archived.values())
@@ -2287,9 +2459,10 @@ def _sync_market_chart_candle(symbol: str, timeframe: str) -> Dict[str, Any]:
         }
     else:
         store = candle_store
-        primary = oanda_history.sync_live_candle(timeframe)
+        primary_service = _active_xau_history_service()
+        primary = primary_service.sync_live_candle(timeframe)
         sync = primary if primary.get("ok") else twelve_data_history.sync_live_candle(timeframe) | {
-            "primary_provider": oanda_history.provider_name,
+            "primary_provider": primary_service.provider_name,
             "primary_status": primary.get("status"),
             "primary_message": primary.get("message"),
         }
@@ -2316,9 +2489,10 @@ def _sync_market_chart_history(symbol: str, timeframe: str) -> Dict[str, Any]:
             "primary_message": primary.get("message"),
         }
     else:
-        primary = oanda_history.sync_recent_history([timeframe])
+        primary_service = _active_xau_history_service()
+        primary = primary_service.sync_recent_history([timeframe])
         history = primary if primary.get("ok") else twelve_data_history.sync_recent_history([timeframe]) | {
-            "primary_provider": oanda_history.provider_name,
+            "primary_provider": primary_service.provider_name,
             "primary_status": primary.get("status"),
             "primary_message": primary.get("message"),
         }
@@ -2371,14 +2545,14 @@ def _verifiable_indicator_panels(
         ),
         "indicator_meta": {
             "market_pressure": {
-                "name": "MACD Histogram",
+                "name": "MACD Momentum",
                 "parameters": "EMA 12, EMA 26, signal 9",
-                "input": "Provider candle close",
+                "input": "Closed provider candles",
             },
             "liquidity_pressure": {
-                "name": "RSI 14",
+                "name": "RSI Momentum",
                 "parameters": "Wilder 14, centered at 50",
-                "input": "Provider candle close",
+                "input": "Closed provider candles",
             },
         },
     }
@@ -2476,6 +2650,7 @@ def _market_analysis_payload(analysis: Dict[str, Any]) -> Dict[str, Any]:
         "execution_reality": analysis.get("execution_reality"),
         "decision_quality": analysis.get("decision_quality"),
         "market_regime": analysis.get("market_regime"),
+        "momentum_engine": analysis.get("momentum_engine"),
         "asset_intelligence": analysis.get("asset_intelligence"),
         "closed_candle_alert": analysis.get("closed_candle_alert"),
         "automation": analysis.get("automation"),
@@ -2505,13 +2680,20 @@ def _build_market_analysis_v4(
     style = _normalize_trading_style(trading_style)
     result = _market_analysis(normalized, engine_core.get_mode())
     result["visual_source"] = "TradingView Live"
-    result["visual_symbol"] = MARKET_VISUAL_SYMBOLS[normalized]
+    result["visual_symbol"] = _market_visual_symbol(normalized)
     result["market_symbol"] = normalized
     result["trading_style"] = style
     result["provider_alignment"] = _provider_alignment(normalized, result.get("analysis_data_source"), sync)
     result["trust_gate"] = _market_trust_gate(normalized, result["provider_alignment"])
     _apply_analysis_trust_gate(result)
     result["session_framework"] = _market_session_framework(normalized, selected_timeframe)
+    result["news_intelligence"] = news_intelligence_engine.snapshot(normalized)
+    momentum_panels = (
+        data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
+    ).indicator_panels(selected_timeframe, 300)
+    result["momentum_engine"] = (
+        momentum_panels.get("indicator_panels") or {}
+    ).get("indicator_snapshot") or {"status": "WAITING"}
     result["key_zones"] = _market_key_zones(
         normalized,
         selected_timeframe,
@@ -2538,7 +2720,7 @@ def _build_market_analysis_v4(
         normalize_timeframe(selected_timeframe),
         champion_validation,
     )
-    expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+    expected_source = _expected_market_source(normalized)
     result["feed_reconciliation"] = feed_reconciliation_engine.evaluate(
         normalized,
         normalize_timeframe(selected_timeframe),
@@ -2546,7 +2728,6 @@ def _build_market_analysis_v4(
         expected_source,
         sync,
     )
-    result["news_intelligence"] = news_intelligence_engine.snapshot(normalized)
     result["market_regime"] = market_regime_engine.evaluate(
         normalized,
         normalize_timeframe(selected_timeframe),
@@ -2613,7 +2794,7 @@ def _latest_completed_candle_time(chart: Dict[str, Any]) -> Optional[int]:
 def _auto_analysis_signature(symbol: str, chart: Dict[str, Any]) -> tuple:
     normalized = _normalize_market_symbol(symbol)
     store = candle_store if normalized == "XAUUSD" else btc_candle_store
-    expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+    expected_source = _expected_market_source(normalized)
     source_counts = store.source_counts()
     required_history = tuple(
         (
@@ -2666,20 +2847,103 @@ def _auto_analyze_market_if_due(
             and previous.get("input_signature") == input_signature
             and previous.get("analysis")
         ):
+            just_completed = bool(previous.get("just_completed"))
+            if just_completed:
+                auto_analysis_state[state_key] = {**previous, "just_completed": False}
             return {
-                "status": "CURRENT",
+                "status": "ANALYZED" if just_completed else "CURRENT",
                 "mode": "AUTO_CLOSED_CANDLE",
-                "ran": False,
+                "ran": just_completed,
                 "analysis": previous["analysis"],
                 "last_analyzed_candle_time": closed_candle_time,
+                "journal_entry": previous.get("journal_entry") if just_completed else None,
+                "tracked_setup": previous.get("tracked_setup") if just_completed else None,
             }
-        auto_analysis_state[state_key] = {**previous, "in_progress": True}
+        auto_analysis_state[state_key] = {
+            **previous,
+            "in_progress": True,
+            "pending_candle_time": closed_candle_time,
+            "pending_input_signature": input_signature,
+        }
 
+    worker = threading.Timer(
+        0.35,
+        _run_auto_analysis_job,
+        args=(state_key, normalized, tf, style, closed_candle_time, input_signature),
+    )
+    worker.name = f"auto-analysis-{normalized.lower()}-{tf.lower()}"
+    worker.daemon = True
+    worker.start()
+    return {
+        "status": "SCANNING",
+        "mode": "AUTO_CLOSED_CANDLE",
+        "ran": False,
+        "analysis": previous.get("analysis"),
+        "last_analyzed_candle_time": previous.get("closed_candle_time"),
+        "pending_candle_time": closed_candle_time,
+    }
+
+
+def _auto_analyze_market_tick_if_due(
+    symbol: str,
+    timeframe: str,
+    chart: Dict[str, Any],
+    trading_style: str = "SCALPING",
+) -> Dict[str, Any]:
+    """Use a cheap closed-candle gate before the full dependency audit."""
+    normalized = _normalize_market_symbol(symbol)
+    tf = normalize_timeframe(timeframe)
+    style = _normalize_trading_style(trading_style)
+    state_key = f"{normalized}:{tf}:{style}"
+    closed_candle_time = _latest_completed_candle_time(chart)
+    if closed_candle_time is None:
+        return {
+            "status": "WAITING_FOR_CLOSED_CANDLE",
+            "mode": "AUTO_CLOSED_CANDLE",
+            "ran": False,
+            "analysis": None,
+            "last_analyzed_candle_time": None,
+        }
+
+    with auto_analysis_lock:
+        previous = dict(auto_analysis_state.get(state_key) or {})
+    if previous.get("in_progress"):
+        return {
+            "status": "SCANNING",
+            "mode": "AUTO_CLOSED_CANDLE",
+            "ran": False,
+            "analysis": None,
+            "last_analyzed_candle_time": previous.get("closed_candle_time"),
+            "pending_candle_time": previous.get("pending_candle_time"),
+        }
+    if (
+        previous.get("closed_candle_time") == closed_candle_time
+        and previous.get("analysis")
+        and not previous.get("just_completed")
+    ):
+        return {
+            "status": "CURRENT",
+            "mode": "AUTO_CLOSED_CANDLE",
+            "ran": False,
+            "analysis": None,
+            "last_analyzed_candle_time": closed_candle_time,
+        }
+    return _auto_analyze_market_if_due(normalized, tf, chart, style)
+
+
+def _run_auto_analysis_job(
+    state_key: str,
+    normalized: str,
+    timeframe: str,
+    style: str,
+    closed_candle_time: int,
+    input_signature: tuple,
+) -> None:
     try:
         sync = _sync_live_visual_analysis_history() if normalized == "XAUUSD" else _sync_btc_visual_analysis_history()
         result = _build_market_analysis_v4(
             normalized,
-            tf,
+            timeframe,
             sync,
             "AUTO_CLOSED_CANDLE",
             closed_candle_time,
@@ -2694,28 +2958,12 @@ def _auto_analyze_market_if_due(
                 "analysis": payload,
                 "journal_entry": result.get("journal_entry"),
                 "tracked_setup": result.get("tracked_setup"),
+                "just_completed": True,
             }
-        return {
-            "status": "ANALYZED",
-            "mode": "AUTO_CLOSED_CANDLE",
-            "ran": True,
-            "analysis": payload,
-            "last_analyzed_candle_time": closed_candle_time,
-            "journal_entry": result.get("journal_entry"),
-            "tracked_setup": result.get("tracked_setup"),
-        }
     except Exception as exc:
         with auto_analysis_lock:
             previous = auto_analysis_state.get(state_key) or {}
             auto_analysis_state[state_key] = {**previous, "in_progress": False, "error": str(exc)}
-        return {
-            "status": "AUTO_ANALYSIS_FAILED",
-            "mode": "AUTO_CLOSED_CANDLE",
-            "ran": False,
-            "analysis": previous.get("analysis"),
-            "last_analyzed_candle_time": previous.get("closed_candle_time"),
-            "error": str(exc),
-        }
 
 
 def _market_session_framework(symbol: str, timeframe: str = "15M") -> Dict[str, Any]:
@@ -2754,7 +3002,7 @@ def _market_key_zones(
     style_profile = diamond_zone_engine.trading_style_profile(style)
     required_timeframes = list(style_profile["weights"])
     integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
-    expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+    expected_source = _expected_market_source(normalized)
     generated_at = pd.Timestamp.now(tz="UTC").isoformat()
 
     def calculate_timeframe(zone_timeframe: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2767,6 +3015,7 @@ def _market_key_zones(
             session or {},
             analysis or {},
             normalized,
+            style,
         )
         zone_result["expected_source"] = expected_source
         zone_result["feed_matched"] = source == expected_source
@@ -2799,6 +3048,7 @@ def _market_key_zones(
         session or {},
         analysis or {},
         normalized,
+        style,
     )
     challenger["expected_source"] = expected_source
     challenger["feed_matched"] = challenger.get("source") == expected_source
@@ -3030,7 +3280,7 @@ def _refresh_tracked_setups(symbol: str) -> int:
 def _reconcile_diamond_history(symbol: str) -> int:
     normalized = _normalize_market_symbol(symbol)
     store = candle_store if normalized == "XAUUSD" else btc_candle_store
-    expected_source = OANDA_HISTORY_SOURCE if normalized == "XAUUSD" else BINANCE_HISTORY_SOURCE
+    expected_source = _expected_market_source(normalized)
     frames: Dict[str, list[Dict[str, Any]]] = {}
     for timeframe in ["5M", "15M", "1H", "4H", "1D"]:
         frame = store.get_candles_df(timeframe, 3000, {expected_source})
@@ -3146,18 +3396,12 @@ def _apply_analysis_trust_gate(result: Dict[str, Any]) -> None:
 
 def _provider_alignment(symbol: str, source: Optional[str], sync: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     normalized = _normalize_market_symbol(symbol)
+    expected_provider = _expected_market_provider(normalized)
     expected = {
-        "XAUUSD": {
-            "visual_symbol": "OANDA:XAUUSD",
-            "analysis_source": OANDA_HISTORY_SOURCE,
-            "provider": oanda_history.provider_name,
-        },
-        "BTCUSD": {
-            "visual_symbol": "BINANCE:BTCUSDT",
-            "analysis_source": BINANCE_HISTORY_SOURCE,
-            "provider": binance_history.provider_name,
-        },
-    }[normalized]
+        "visual_symbol": _market_visual_symbol(normalized),
+        "analysis_source": _expected_market_source(normalized),
+        "provider": expected_provider.provider_name,
+    }
     matched = source == expected["analysis_source"]
     return {
         "status": "MATCHED" if matched else "FALLBACK",

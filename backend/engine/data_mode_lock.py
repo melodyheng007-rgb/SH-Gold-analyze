@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .xauusd_provider import (
     LIVE_SOURCES,
@@ -27,10 +27,17 @@ class DataModeLockService:
         "BACKEND_OFFLINE_MODE",
     }
 
-    def __init__(self, store: SQLiteCandleStore, settings: ProviderSettings, symbol: str = "XAUUSD"):
+    def __init__(
+        self,
+        store: SQLiteCandleStore,
+        settings: ProviderSettings,
+        symbol: str = "XAUUSD",
+        preferred_source: Optional[Callable[[], Optional[str]]] = None,
+    ):
         self.store = store
         self.settings = settings
         self.symbol = str(symbol or "XAUUSD").upper()
+        self.preferred_source = preferred_source
 
     def locked_mode(
         self,
@@ -42,13 +49,18 @@ class DataModeLockService:
         counts = self.store.counts() if backend_online else {}
         source_counts = self.store.source_counts() if backend_online else {}
         selected_mode = self.settings.data_mode() if backend_online else "BACKEND_OFFLINE"
+        active_source = self._preferred_source()
         source_summary = self._source_summary(source_counts)
         has_live_price = provider_status.get("latest_price") is not None
         has_test = self._has_any_source(source_counts, TEST_HISTORY_SOURCES)
-        has_real = self._has_any_source(source_counts, REAL_RECENT_SOURCES)
+        has_real = (
+            self._has_any_source(source_counts, {active_source})
+            if active_source
+            else self._has_any_source(source_counts, REAL_RECENT_SOURCES)
+        )
         has_live_candles = self._has_any_source(source_counts, LIVE_SOURCES)
         has_any_candles = any(counts.values())
-        enough = self._has_enough_analysis_history(counts)
+        enough = self._has_enough_analysis_history(counts, source_counts, active_source)
         diagnosis_status = (diagnosis or {}).get("status")
         alignment_status = (integrity or {}).get("alignment_status") or ((integrity or {}).get("alignment") or {}).get("alignment_status")
         alignment_allowed = (integrity or {}).get("analysis_allowed")
@@ -113,6 +125,7 @@ class DataModeLockService:
             "provider_status": provider_status.get("status") if backend_online else "OFFLINE",
             "provider_name": provider_status.get("provider_name") if backend_online else "-",
             "candle_source": source_summary["primary_source"],
+            "expected_candle_source": active_source,
             "candle_source_detail": source_summary,
             "chart_ready": bool(has_any_candles or has_live_price) and mode != "BACKEND_OFFLINE_MODE",
             "analysis_ready": bool(analysis_ready),
@@ -153,8 +166,26 @@ class DataModeLockService:
     def _has_any_source(self, source_counts: Dict[str, Dict[str, int]], sources: set[str]) -> bool:
         return any(count > 0 for counts in source_counts.values() for source, count in counts.items() if source in sources)
 
-    def _has_enough_analysis_history(self, counts: Dict[str, int]) -> bool:
+    def _has_enough_analysis_history(
+        self,
+        counts: Dict[str, int],
+        source_counts: Dict[str, Dict[str, int]],
+        active_source: Optional[str],
+    ) -> bool:
+        if active_source:
+            return all(
+                int(source_counts.get(tf, {}).get(active_source, 0)) >= MIN_ANALYSIS_CANDLES[tf]
+                for tf in ["5M", "15M", "1H", "4H", "1D"]
+            )
         return all(counts.get(tf, 0) >= MIN_ANALYSIS_CANDLES[tf] for tf in ["5M", "15M", "1H", "4H", "1D"])
+
+    def _preferred_source(self) -> Optional[str]:
+        if not self.preferred_source:
+            return None
+        try:
+            return self.preferred_source()
+        except Exception:
+            return None
 
     def _source_summary(self, source_counts: Dict[str, Dict[str, int]]) -> Dict[str, Any]:
         totals: Dict[str, int] = {}

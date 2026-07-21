@@ -33,14 +33,19 @@ class DiamondZoneEngine:
         session_context: Optional[Dict[str, Any]] = None,
         analysis_context: Optional[Dict[str, Any]] = None,
         symbol: str = "XAUUSD",
+        trading_style: Optional[str] = None,
     ) -> Dict[str, Any]:
         rows = self._candles(candles)
         if len(rows) < 30:
             return self._empty("INSUFFICIENT_CLOSED_CANDLES", timeframe, source, len(rows), symbol)
 
         profile = self._adaptive_profile(self._profile(symbol, timeframe), rows, symbol, timeframe)
+        profile = self._style_adjusted_profile(profile, trading_style, timeframe)
         visible_score_floor = int(profile.get("min_visible_diamond_score", self.MIN_VISIBLE_DIAMOND_SCORE))
         expected = self._expected_direction(session_context or {}, analysis_context or {})
+        news_context = dict((analysis_context or {}).get("news_intelligence") or {})
+        news_guard_active = news_context.get("execution_gate") == "BLOCK_NEW_ENTRIES"
+        news_guard_bars = 3 if str(timeframe or "").upper() in {"1M", "5M", "15M"} else 2
 
         candidates: list[Dict[str, Any]] = []
         funnel_counts: Counter[str] = Counter()
@@ -149,6 +154,19 @@ class DiamondZoneEngine:
                 else "BEARISH" if fast_mean < slow_mean - atr * 0.08
                 else "MIXED"
             )
+            scalp_rejection = self._scalp_wick_rejection_candidate(
+                rows,
+                index,
+                atr,
+                profile,
+                expected,
+            )
+            if scalp_rejection:
+                candidates.append(scalp_rejection)
+                funnel_counts["context_zones"] += 1
+                funnel_counts["scalp_rejection_origins"] += 1
+                if scalp_rejection.get("entry_eligible_origin"):
+                    funnel_counts["qualified_origins"] += 1
             previous = rows[index - 1]
             previous_direction = "BULLISH" if previous["close"] > previous["open"] else "BEARISH" if previous["close"] < previous["open"] else "NEUTRAL"
             trend_pullback_reclaim = bool(
@@ -421,8 +439,28 @@ class DiamondZoneEngine:
                     funnel_counts[stage] += 1
             if not diagnostic.get("event") and trace.get("blocker"):
                 funnel_blockers[str(trace["blocker"])] += 1
+        suppressed_zones = []
+        if news_guard_active:
+            for zone in zones:
+                if int(zone.get("age_bars") or 0) > news_guard_bars:
+                    continue
+                zone.update({
+                    "display_as_diamond": False,
+                    "entry_score_qualified": False,
+                    "actionable_entry": False,
+                    "news_guard_suppressed": True,
+                    "entry_stage": "NEWS_GUARD",
+                    "entry_blocker": "HIGH_IMPACT_NEWS_WINDOW",
+                    "entry_blocker_label": "Waiting for the high-impact news window to clear",
+                })
+                suppressed_zones.append(zone)
+        raw_entry_events = [diagnostic["event"] for diagnostic in entry_diagnostics if diagnostic.get("event")]
+        suppressed_entry_events = [
+            event for event in raw_entry_events
+            if news_guard_active and int(event.get("age_bars") or 0) <= news_guard_bars
+        ]
         entry_events = self._distinct_entry_events(
-            [diagnostic["event"] for diagnostic in entry_diagnostics if diagnostic.get("event")],
+            [event for event in raw_entry_events if event not in suppressed_entry_events],
             profile,
         )
         funnel_counts["confirmed_entries"] = len(entry_events)
@@ -431,7 +469,7 @@ class DiamondZoneEngine:
         recent_entry = latest_entry if latest_entry and latest_entry["age_bars"] <= profile["max_entry_age_bars"] else None
         visible_zones = [zone for zone in zones if zone.get("display_as_diamond")]
         entry_grade_zones = [zone for zone in visible_zones if zone.get("entry_score_qualified")]
-        lead_zone = self._lead_diamond_zone(zones, entry_events, expected, profile)
+        lead_zone = None if news_guard_active else self._lead_diamond_zone(zones, entry_events, expected, profile)
         for zone in zones:
             zone["is_lead_diamond"] = bool(lead_zone and zone.get("id") == lead_zone.get("id"))
         live_zones = [lead_zone] if lead_zone else []
@@ -447,12 +485,13 @@ class DiamondZoneEngine:
             "market_context": sum(1 for zone in visible_zones if zone.get("display_role") == "MARKET_CONTEXT"),
             "invalidated_context": sum(1 for zone in zones if zone.get("display_role") == "INVALIDATED_CONTEXT"),
             "rejected_internal": len(zones) - len(visible_zones),
-            "production_signal_rule": f"Structural observations scoring {visible_score_floor} or higher remain auditable; only one fresh Grade B or better Lead Diamond is published live.",
-            "qualified_rule": f"The live Lead Diamond requires {profile['lead_diamond_score']}+ quality, an execution-qualified origin, intact lifecycle, and closed-candle confirmation before entry.",
+            "production_signal_rule": f"Structural observations scoring {visible_score_floor} or higher remain auditable; only one fresh Lead Diamond is published live.",
+            "qualified_rule": f"The live Lead Diamond requires {profile['lead_diamond_score']}+ zone quality and an intact lifecycle; closed-candle confirmation remains a separate entry gate.",
             "context_rule": f"Sub-{visible_score_floor} and invalidated observations stay in the evidence audit but are hidden from the live chart.",
             "grade_rule": "Visible Diamond grades are A+, A, B, C, or D. Grade D is watch-only; C or better is entry-grade.",
             "tier_rule": "EARLY is market context, QUALIFIED passed the strict origin gate, and CONFIRMED passed a closed-candle entry pathway.",
             "repaint_policy": "Signal timestamps and grades are locked from completed candles only; later invalidation changes lifecycle, not historical evidence.",
+            "news_guard_suppressed": len(suppressed_zones) + len(suppressed_entry_events),
         }
         recent_entry_pool = [
             zone for zone in zones
@@ -505,6 +544,9 @@ class DiamondZoneEngine:
             else primary["line"]
         )
         next_trigger = (
+            news_context.get("summary") or "Wait for the high-impact news window and a new completed candle"
+            if news_guard_active
+            else
             self._next_trigger(primary, candle_color)
             if lead_zone
             else f"Scanning for one fresh Lead Diamond with Grade B / {profile['lead_diamond_score']}+ quality"
@@ -575,6 +617,13 @@ class DiamondZoneEngine:
                 "confirmed": len(entry_events),
             },
             "signal_integrity": signal_integrity,
+            "news_shock_guard": {
+                "status": "LOCKED" if news_guard_active else "CLEAR",
+                "suppressed_current_zones": len(suppressed_zones),
+                "suppressed_current_entries": len(suppressed_entry_events),
+                "history_preserved": True,
+                "event": (news_context.get("primary_event") or {}).get("title"),
+            },
             "precision_gate": {
                 "status": "QUALIFIED" if primary.get("entry_score_qualified") else "WATCH_ONLY" if primary.get("display_as_diamond") else "REJECTED",
                 "origin_model": primary.get("origin_model"),
@@ -616,8 +665,8 @@ class DiamondZoneEngine:
                 "diamond_line": "BUY uses the bullish origin low; SELL uses the bearish origin high",
                 "zone_band": f"Diamond line +/- max({profile['atr_band']:.2f} ATR14, {profile['range_band']:.2f} candle range)",
                 "direction": "BUY requires a discount-side bullish origin; SELL requires a premium-side bearish origin",
-                "quality": f"0-100 gated model: sub-{visible_score_floor} is internal audit, D/C remain evidence or watch, and only B {profile['lead_diamond_score']}+ may become the single live Lead Diamond",
-                "primary_zone": "One Lead Diamond selected by confirmation, Grade B+ quality, HTF side, intact lifecycle, ATR distance, and freshness",
+                "quality": f"0-100 gated model: sub-{visible_score_floor} is internal audit; the adaptive Scalp Lead floor is {profile['lead_diamond_score']} and confirmed entry gates remain stricter",
+                "primary_zone": "One Lead Diamond selected by zone quality, intact lifecycle, ATR distance, freshness, and confirmation state",
             },
             "uses_completed_candles_only": True,
             "proprietary_formula_claimed": False,
@@ -640,17 +689,184 @@ class DiamondZoneEngine:
             and latest_index - int(candidate.get("bar_index") or 0) <= protected_age
         ]
         ordered = protected + [candidate for candidate in reversed(candidates) if candidate not in protected]
+        merge_distance_atr = float((profile or {}).get("zone_merge_distance_atr") or 0.20)
+        merge_window_bars = int((profile or {}).get("zone_merge_window_bars") or 8)
         for candidate in ordered:
-            duplicate = any(
-                item["direction"] == candidate["direction"]
-                and abs(item["line"] - candidate["line"]) <= max(item["atr_14"], candidate["atr_14"]) * 0.14
-                for item in selected
-            )
-            if not duplicate:
+            duplicate_index = next((
+                index for index, item in enumerate(selected)
+                if item["direction"] == candidate["direction"]
+                and abs(item["line"] - candidate["line"]) <= max(item["atr_14"], candidate["atr_14"]) * merge_distance_atr
+                and (
+                    abs(int(item.get("bar_index") or 0) - int(candidate.get("bar_index") or 0)) <= merge_window_bars
+                    or abs(item["line"] - candidate["line"]) <= max(item["atr_14"], candidate["atr_14"]) * 0.08
+                )
+            ), None)
+            if duplicate_index is None:
                 selected.append(dict(candidate))
+            elif self._zone_candidate_rank(candidate) > self._zone_candidate_rank(selected[duplicate_index]):
+                selected[duplicate_index] = dict(candidate)
             if len(selected) >= limit:
                 break
         return sorted(selected, key=lambda item: int(item.get("time") or 0), reverse=True)
+
+    @staticmethod
+    def _scalp_wick_rejection_candidate(
+        rows: list[Dict[str, Any]],
+        index: int,
+        atr: float,
+        profile: Dict[str, Any],
+        expected: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Capture one closed-candle key high/low after a 5M expansion rejection."""
+        if not profile.get("scalp_wick_rejection_enabled") or index < 15 or atr <= 0:
+            return None
+        row = rows[index]
+        candle_range = float(row["high"]) - float(row["low"])
+        if candle_range <= 0:
+            return None
+        range_ratio = candle_range / atr
+        body_ratio = abs(float(row["close"]) - float(row["open"])) / candle_range
+        upper_wick = (float(row["high"]) - max(float(row["open"]), float(row["close"]))) / candle_range
+        lower_wick = (min(float(row["open"]), float(row["close"])) - float(row["low"])) / candle_range
+        minimum_wick = float(profile.get("min_scalp_rejection_wick_ratio") or 0.40)
+        if range_ratio < float(profile.get("min_scalp_rejection_range_atr") or 1.70):
+            return None
+        if max(upper_wick, lower_wick) < minimum_wick or body_ratio < 0.18:
+            return None
+
+        if upper_wick >= lower_wick:
+            direction = "BEARISH"
+            entry_side = "SELL"
+            entry_line = float(row["high"])
+            wick_ratio = upper_wick
+        else:
+            direction = "BULLISH"
+            entry_side = "BUY"
+            entry_line = float(row["low"])
+            wick_ratio = lower_wick
+
+        prior = rows[max(0, index - 8):index]
+        wider_prior = rows[max(0, index - int(profile["location_window_bars"])):index]
+        if not prior or not wider_prior:
+            return None
+        prior_low = min(float(item["low"]) for item in prior)
+        prior_high = max(float(item["high"]) for item in prior)
+        wider_low = min(float(item["low"]) for item in wider_prior)
+        wider_high = max(float(item["high"]) for item in wider_prior)
+        local_span = max(prior_high - prior_low, 1e-9)
+        wider_span = max(wider_high - wider_low, 1e-9)
+        local_position = max(0.0, min(1.0, (entry_line - prior_low) / local_span))
+        wider_position = max(0.0, min(1.0, (entry_line - wider_low) / wider_span))
+        local_location = round((1.0 - local_position) * 100 if direction == "BULLISH" else local_position * 100)
+        wider_location = round((1.0 - wider_position) * 100 if direction == "BULLISH" else wider_position * 100)
+        location = round(local_location * 0.42 + wider_location * 0.58)
+        if (
+            location < int(profile.get("min_scalp_rejection_location_score") or 68)
+            or wider_location < int(profile.get("min_scalp_rejection_wider_location_score") or 60)
+        ):
+            return None
+
+        swept_extreme = bool(
+            entry_line > prior_high if direction == "BEARISH" else entry_line < prior_low
+        )
+        score = round(min(100.0, (
+            min(wick_ratio / 0.60, 1.0) * 25
+            + min(range_ratio / 2.0, 1.0) * 18
+            + location / 100 * 18
+            + min(body_ratio / 0.50, 1.0) * 10
+            + (7 if swept_extreme else 3)
+        )))
+        if score < int(profile.get("min_scalp_rejection_score") or 66):
+            return None
+
+        recent_closes = [float(item["close"]) for item in wider_prior[-20:]]
+        fast_mean = sum(recent_closes[-5:]) / max(1, len(recent_closes[-5:]))
+        slow_mean = sum(recent_closes) / max(1, len(recent_closes))
+        wider_trend = (
+            "BULLISH" if fast_mean > slow_mean + atr * 0.08
+            else "BEARISH" if fast_mean < slow_mean - atr * 0.08
+            else "MIXED"
+        )
+        direction_aligned = expected not in {"BULLISH", "BEARISH"} or direction == expected
+        news_spike_risk = range_ratio >= float(profile.get("max_clean_expansion") or 3.4)
+        origin_quality = round(min(100.0, (
+            score * 0.55
+            + location * 0.22
+            + wider_location * 0.10
+            + min(wick_ratio / 0.60, 1.0) * 8
+            + (5 if swept_extreme else 2)
+        )))
+        execution_ready = score >= int(profile.get("min_scalp_rejection_entry_score") or 70)
+        entry_eligible = bool(
+            execution_ready
+            and origin_quality >= int(profile.get("min_scalp_rejection_origin_quality") or 68)
+            and direction_aligned
+            and not news_spike_risk
+        )
+        half_width = max(atr * float(profile["atr_band"]), candle_range * float(profile["range_band"]))
+        disqualifiers = []
+        if not execution_ready:
+            disqualifiers.append("ENTRY_IMPULSE_SCORE_BELOW_FLOOR")
+        if not direction_aligned:
+            disqualifiers.append("HTF_DIRECTION_CONFLICT")
+        if news_spike_risk:
+            disqualifiers.append("OVERSIZED_NEWS_SPIKE")
+        return {
+            "id": f"{'buy' if direction == 'BULLISH' else 'sell'}-{row['time']}-wick",
+            "time": row["time"],
+            "direction": direction,
+            "entry_side": entry_side,
+            "signal_label": "DIAMOND_BUY" if direction == "BULLISH" else "DIAMOND_SELL",
+            "entry_anchor": "CANDLE_LOW" if direction == "BULLISH" else "CANDLE_HIGH",
+            "line": entry_line,
+            "low": entry_line - half_width,
+            "high": entry_line + half_width,
+            "score": score,
+            "atr_14": atr,
+            "body_ratio": body_ratio,
+            "range_ratio": range_ratio,
+            "close_strength": wick_ratio,
+            "impulse_open": row["open"],
+            "impulse_close": row["close"],
+            "impulse_high": row["high"],
+            "impulse_low": row["low"],
+            "dealing_range_position": local_position,
+            "wider_dealing_range_position": wider_position,
+            "local_entry_location_score": local_location,
+            "wider_entry_location_score": wider_location,
+            "entry_location_score": location,
+            "liquidity_sweep": False,
+            "rejection_sweep": swept_extreme,
+            "scalp_key_zone": True,
+            "structure_break": False,
+            "wider_structure_break": False,
+            "compression_break": False,
+            "trend_pullback_reclaim": False,
+            "wider_trend_direction": wider_trend,
+            "active_structure": True,
+            "continuation": False,
+            "expected_direction_at_origin": expected,
+            "direction_aligned": direction_aligned,
+            "origin_model": "SCALP_WICK_REJECTION",
+            "origin_quality_score": origin_quality,
+            "origin_quality_grade": DiamondZoneEngine._quality_grade(origin_quality),
+            "context_quality_passed": True,
+            "execution_impulse_ready": execution_ready,
+            "execution_impulse_failures": [] if execution_ready else ["ENTRY_IMPULSE_SCORE_BELOW_FLOOR"],
+            "entry_eligible_origin": entry_eligible,
+            "origin_disqualifiers": disqualifiers,
+            "news_spike_risk": news_spike_risk,
+            "bar_index": index,
+        }
+
+    @staticmethod
+    def _zone_candidate_rank(zone: Dict[str, Any]) -> tuple:
+        return (
+            1 if zone.get("entry_eligible_origin") else 0,
+            int(zone.get("origin_quality_score") or 0),
+            int(zone.get("score") or 0),
+            int(zone.get("bar_index") or 0),
+        )
 
     def _entry_event(
         self,
@@ -1371,6 +1587,9 @@ class DiamondZoneEngine:
         elif zone.get("trend_pullback_reclaim"):
             structure_points = 7.0
             reasons.append("TREND_PULLBACK_RECLAIM")
+        elif zone.get("scalp_key_zone") and zone.get("rejection_sweep"):
+            structure_points = 10.0
+            reasons.append("SCALP_WICK_REJECTION")
         else:
             structure_points = 4.0
 
@@ -1401,6 +1620,7 @@ class DiamondZoneEngine:
             "discovery": round(min(8.0, (
                 (3.0 if zone.get("liquidity_sweep") or zone.get("wider_structure_break") else 0.0)
                 + (2.5 if zone.get("compression_break") or zone.get("trend_pullback_reclaim") else 0.0)
+                + (3.0 if zone.get("scalp_key_zone") and zone.get("rejection_sweep") else 0.0)
                 + (2.0 if zone.get("continuation") and zone.get("direction_aligned") is not False else 0.0)
                 + (1.5 if lifecycle == "FRESH" else 0.5 if lifecycle == "TESTED" else 0.0)
             )), 1),
@@ -1427,8 +1647,12 @@ class DiamondZoneEngine:
             penalties["invalidated"] = 35.0
             reasons.append("ZONE_INVALIDATED")
         if zone.get("direction_aligned") is False:
-            penalties["htf_conflict"] = 15.0
-            reasons.append("HTF_DIRECTION_CONFLICT")
+            if zone.get("scalp_key_zone"):
+                penalties["htf_conflict"] = 6.0
+                reasons.append("SCALP_COUNTERTREND_WATCH")
+            else:
+                penalties["htf_conflict"] = 15.0
+                reasons.append("HTF_DIRECTION_CONFLICT")
         distance = float(zone.get("distance_atr") or 0)
         max_distance = float(profile.get("max_context_distance_atr") or 2.25)
         if distance > max_distance:
@@ -1733,10 +1957,14 @@ class DiamondZoneEngine:
             for event in entry_events
             if int(event.get("quality_score") or 0) >= score_floor
         }
+        scalp_watch_enabled = bool(
+            str(profile.get("trading_style") or "").upper() == "SCALPING"
+            and profile.get("scalp_wick_rejection_enabled")
+        )
         candidates = [
             zone for zone in zones
             if zone.get("display_as_diamond")
-            and zone.get("entry_eligible_origin")
+            and (zone.get("entry_eligible_origin") or (scalp_watch_enabled and zone.get("scalp_key_zone")))
             and int(zone.get("diamond_score") or 0) >= score_floor
             and str(zone.get("lifecycle") or "") in {"FRESH", "TESTED"}
             and str(zone.get("zone_health") or "") not in {"INVALIDATED", "STALE", "REJECTED"}
@@ -1748,6 +1976,7 @@ class DiamondZoneEngine:
             and (
                 expected not in {"BULLISH", "BEARISH"}
                 or zone.get("direction") == expected
+                or (scalp_watch_enabled and zone.get("scalp_key_zone"))
             )
         ]
         if not candidates:
@@ -1956,7 +2185,27 @@ class DiamondZoneEngine:
         baseline_median = median(baseline) if baseline else recent_median
         volatility_ratio = recent_median / baseline_median if baseline_median > 0 else 1.0
         regime = "ELEVATED" if volatility_ratio >= 1.45 else "QUIET" if volatility_ratio <= 0.72 else "NORMAL"
+        recent_closes = [float(row["close"]) for row in rows[-36:]]
+        directional_path = sum(abs(right - left) for left, right in zip(recent_closes, recent_closes[1:]))
+        directional_efficiency = (
+            abs(recent_closes[-1] - recent_closes[0]) / directional_path
+            if len(recent_closes) > 1 and directional_path > 0
+            else 0.0
+        )
+        structure = "TRENDING" if directional_efficiency >= 0.42 else "CHOPPY" if directional_efficiency <= 0.22 else "BALANCED"
         adjustments: list[str] = []
+        runtime["zone_merge_distance_atr"] = {
+            "5M": 0.22,
+            "15M": 0.20,
+            "1H": 0.18,
+            "4H": 0.16,
+        }.get(normalized_timeframe, 0.20)
+        runtime["zone_merge_window_bars"] = {
+            "5M": 10,
+            "15M": 8,
+            "1H": 6,
+            "4H": 5,
+        }.get(normalized_timeframe, 8)
 
         if regime == "ELEVATED" and normalized_timeframe in {"5M", "15M"}:
             runtime["min_entry_quality"] = min(100, int(runtime["min_entry_quality"]) + 2)
@@ -1964,14 +2213,32 @@ class DiamondZoneEngine:
             runtime["min_scalp_reaction_quality"] = min(100, int(runtime["min_scalp_reaction_quality"]) + 2)
             runtime["max_live_chase_atr"] = round(max(0.20, float(runtime["max_live_chase_atr"]) - 0.05), 3)
             runtime["entry_cooldown_bars"] = int(runtime["entry_cooldown_bars"]) + 1
+            runtime["zone_merge_distance_atr"] = round(float(runtime["zone_merge_distance_atr"]) + 0.08, 3)
+            runtime["zone_merge_window_bars"] = int(runtime["zone_merge_window_bars"]) + 2
+            runtime["max_daily_entries"] = max(2, int(runtime["max_daily_entries"]) - 1)
             adjustments.extend(["STRONGER_CONFIRMATION", "TIGHTER_ANTI_CHASE", "LONGER_DEDUPE"])
         elif regime == "QUIET":
             runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + 2
             runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 2
+            runtime["context_zone_limit"] = int(runtime["context_zone_limit"]) + (4 if normalized_timeframe == "5M" else 2)
             adjustments.extend(["LONGER_RETEST_WINDOW", "LONGER_ZONE_PATIENCE"])
+
+        if structure == "CHOPPY":
+            runtime["zone_merge_distance_atr"] = round(float(runtime["zone_merge_distance_atr"]) + 0.07, 3)
+            runtime["zone_merge_window_bars"] = int(runtime["zone_merge_window_bars"]) + 2
+            runtime["entry_cooldown_bars"] = int(runtime["entry_cooldown_bars"]) + 1
+            adjustments.extend(["CHOP_DUPLICATE_MERGE", "CHOP_COOLDOWN"])
+        elif structure == "TRENDING" and normalized_timeframe in {"5M", "15M"}:
+            runtime["active_follow_window_bars"] = int(runtime["active_follow_window_bars"]) + 1
+            runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 1
+            if regime != "ELEVATED":
+                runtime["max_daily_entries"] = min(6, int(runtime["max_daily_entries"]) + 1)
+            adjustments.extend(["TREND_CONTINUATION_WINDOW", "TREND_ZONE_PATIENCE"])
 
         runtime["adaptive_regime"] = regime
         runtime["adaptive_volatility_ratio"] = round(volatility_ratio, 3)
+        runtime["adaptive_structure"] = structure
+        runtime["adaptive_directional_efficiency"] = round(directional_efficiency, 3)
         runtime["adaptive_adjustments"] = adjustments or ["BASELINE_GATES"]
         runtime["asset_model"] = runtime.get("asset_model") or (
             "XAU_PRECISION" if normalized_symbol == "XAUUSD" else "BTC_CONTINUATION" if normalized_symbol == "BTCUSD" else "CROSS_ASSET"
@@ -1984,11 +2251,51 @@ class DiamondZoneEngine:
             "version": "ADAPTIVE_PROFILE_V7",
             "asset_model": profile.get("asset_model") or "CROSS_ASSET",
             "regime": profile.get("adaptive_regime") or "WAITING",
+            "structure": profile.get("adaptive_structure") or "WAITING",
             "volatility_ratio": profile.get("adaptive_volatility_ratio"),
+            "directional_efficiency": profile.get("adaptive_directional_efficiency"),
             "adjustments": list(profile.get("adaptive_adjustments") or []),
+            "density": {
+                "target_per_100_bars": profile.get("target_diamonds_per_100_bars"),
+                "merge_distance_atr": profile.get("zone_merge_distance_atr"),
+                "merge_window_bars": profile.get("zone_merge_window_bars"),
+            },
             "closed_candles_only": True,
             "quality_floor_preserved": True,
         }
+
+    @staticmethod
+    def _style_adjusted_profile(
+        profile: Dict[str, Any],
+        trading_style: Optional[str],
+        timeframe: str,
+    ) -> Dict[str, Any]:
+        runtime = dict(profile)
+        normalized_timeframe = str(timeframe or "15M").upper()
+        style = str(trading_style or ("SWING" if normalized_timeframe in {"1H", "4H"} else "SCALPING")).upper()
+        if style == "SWING":
+            runtime["trading_style"] = "SWING"
+            runtime["target_diamonds_per_100_bars"] = "2-4"
+            runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + 1
+            runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 2
+            runtime["entry_cooldown_bars"] = int(runtime["entry_cooldown_bars"]) + 1
+            return runtime
+
+        runtime["trading_style"] = "SCALPING"
+        runtime["target_diamonds_per_100_bars"] = "3-6"
+        if normalized_timeframe == "5M":
+            regime = str(runtime.get("adaptive_regime") or "NORMAL")
+            runtime["lead_diamond_score"] = {
+                "QUIET": 64,
+                "NORMAL": 66,
+                "ELEVATED": 70,
+            }.get(regime, 66)
+            runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + 2
+            runtime["active_follow_window_bars"] = int(runtime["active_follow_window_bars"]) + 1
+            runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 1
+            runtime["entry_cooldown_bars"] = max(5, int(runtime["entry_cooldown_bars"]) - 1)
+            runtime["max_daily_entries"] = min(6, int(runtime["max_daily_entries"]) + 1)
+        return runtime
 
     @staticmethod
     def _threshold_profile(symbol: str, timeframe: str) -> Dict[str, Any]:
@@ -2064,6 +2371,14 @@ class DiamondZoneEngine:
                 "max_active_entry_displacement_atr": 1.05 if normalized_timeframe == "5M" else 0.85 if normalized_timeframe == "15M" else 0.95,
                 "max_active_origin_line_displacement_atr": 1.55 if normalized_timeframe == "5M" else 1.45,
                 "scalp_first_reaction_enabled": normalized_timeframe == "5M",
+                "scalp_wick_rejection_enabled": normalized_timeframe == "5M",
+                "min_scalp_rejection_range_atr": 1.70,
+                "min_scalp_rejection_wick_ratio": 0.40,
+                "min_scalp_rejection_location_score": 68,
+                "min_scalp_rejection_wider_location_score": 60,
+                "min_scalp_rejection_score": 66,
+                "min_scalp_rejection_entry_score": 70,
+                "min_scalp_rejection_origin_quality": 68,
                 "scalp_reaction_window_bars": 6,
                 "min_scalp_pullback_atr": 0.04,
                 "max_scalp_pullback_atr": 1.45,
@@ -2147,6 +2462,14 @@ class DiamondZoneEngine:
             "max_active_entry_displacement_atr": 0.95,
             "max_active_origin_line_displacement_atr": 1.55,
             "scalp_first_reaction_enabled": False,
+            "scalp_wick_rejection_enabled": normalized_timeframe == "5M",
+            "min_scalp_rejection_range_atr": 1.75,
+            "min_scalp_rejection_wick_ratio": 0.42,
+            "min_scalp_rejection_location_score": 68,
+            "min_scalp_rejection_wider_location_score": 60,
+            "min_scalp_rejection_score": 68,
+            "min_scalp_rejection_entry_score": 72,
+            "min_scalp_rejection_origin_quality": 70,
             "scalp_reaction_window_bars": 0,
             "min_scalp_pullback_atr": 0.04,
             "max_scalp_pullback_atr": 1.45,

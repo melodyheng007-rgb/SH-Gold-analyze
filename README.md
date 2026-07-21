@@ -1,4 +1,4 @@
-# SH Market Analyzer V3.8
+# SH Market Analyzer V3.8.1
 
 ## V3.8 Adaptive Diamond Intelligence
 
@@ -14,11 +14,12 @@ Evidence-driven trading workstation for closed-candle XAUUSD and BTCUSD market r
 ## Market Data
 
 - XAUUSD analysis uses matched `OANDA:XAUUSD` midpoint candle history.
+- The OANDA feed is source-locked across chart, indicators, Pro Analyze, Diamond Zone, and history validation.
 - BTCUSD analysis uses matched `BINANCE:BTCUSDT` spot candle history.
 - TradingView remains a separate live visual reference.
 - Unmatched or stale feeds are visibly downgraded to research-only.
 - Forming candles are displayed live but excluded from analysis and validation.
-- XAU freshness respects OANDA's New York session (`Sun-Fri 18:05-16:59`), so scheduled weekend and maintenance closures do not create a false stale-data lock.
+- XAU freshness respects OANDA's market session, so scheduled weekend and maintenance closures do not create a false stale-data lock.
 
 ## V3.2 Result Integrity
 

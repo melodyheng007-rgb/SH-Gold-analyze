@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import threading
 import time
@@ -77,6 +78,7 @@ class SupabaseAuthGuard:
             or ""
         ).strip()
         self.configured = bool(self.supabase_url and self.publishable_key)
+        self.local_owner_mode = _enabled(os.getenv("SH_LOCAL_OWNER_MODE"))
         self._session = requests.Session()
         self._cache: OrderedDict[str, tuple[float, Dict[str, Any]]] = OrderedDict()
         self._cache_lock = threading.Lock()
@@ -91,6 +93,18 @@ class SupabaseAuthGuard:
 
     def requires_admin(self, path: str) -> bool:
         return path in self.ADMIN_PATHS or path in {"/", "/docs", "/openapi.json", "/redoc"}
+
+    def permits_local_owner(self, client_host: Optional[str]) -> bool:
+        """Allow an authenticated local developer to manage feed credentials."""
+        if not self.local_owner_mode:
+            return False
+        host = str(client_host or "").strip().strip("[]")
+        if host.lower() == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def verify(self, authorization: Optional[str]) -> Dict[str, Any]:
         if not self.configured:
@@ -150,4 +164,5 @@ class SupabaseAuthGuard:
             "required": self.required,
             "configured": self.configured,
             "provider": "SUPABASE" if self.configured else "NOT_CONFIGURED",
+            "local_owner_mode": self.local_owner_mode,
         }

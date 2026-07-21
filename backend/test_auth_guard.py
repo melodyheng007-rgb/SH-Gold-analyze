@@ -40,6 +40,17 @@ class SupabaseAuthGuardTests(unittest.TestCase):
         self.assertTrue(guard.requires_admin("/api/xauusd/reset-database"))
         self.assertFalse(guard.requires_admin("/api/market/chart-live"))
 
+    def test_local_owner_mode_only_allows_loopback_clients(self):
+        guard = self.make_guard(SH_LOCAL_OWNER_MODE="true")
+        self.assertTrue(guard.permits_local_owner("127.0.0.1"))
+        self.assertTrue(guard.permits_local_owner("::1"))
+        self.assertTrue(guard.permits_local_owner("localhost"))
+        self.assertFalse(guard.permits_local_owner("192.168.1.20"))
+
+    def test_local_owner_mode_is_disabled_by_default(self):
+        guard = self.make_guard(SH_LOCAL_OWNER_MODE="false")
+        self.assertFalse(guard.permits_local_owner("127.0.0.1"))
+
     def test_missing_bearer_token_is_rejected(self):
         guard = self.make_guard()
         with self.assertRaises(AuthGuardError) as captured:

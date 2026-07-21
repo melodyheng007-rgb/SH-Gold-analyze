@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
 
@@ -53,8 +53,21 @@ class CandleHistoryAlignmentEngine:
     ABS_PRICE_GAP = 10.0
     ABS_CRITICAL_GAP = 20.0
 
-    def __init__(self, store: SQLiteCandleStore):
+    def __init__(
+        self,
+        store: SQLiteCandleStore,
+        preferred_source: Optional[Callable[[], Optional[str]]] = None,
+    ):
         self.store = store
+        self.preferred_source = preferred_source
+
+    def _configured_source(self) -> Optional[str]:
+        if not self.preferred_source:
+            return None
+        try:
+            return self.preferred_source()
+        except Exception:
+            return None
 
     def check(self, timeframe: str = "15M", limit: int = 1000, cleaned: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
         tf = normalize_timeframe(timeframe)
@@ -164,6 +177,10 @@ class CandleHistoryAlignmentEngine:
             return pd.DataFrame(columns=df.columns)
         live_price = self._number(self.store.load_status().latest_price)
         live_time = self._timestamp(self.store.load_status().last_updated) or pd.Timestamp.now(tz="UTC")
+        configured_source = self._configured_source()
+        configured_history = self._source_slice(df, {configured_source}) if configured_source else pd.DataFrame(columns=df.columns)
+        if not configured_history.empty:
+            return configured_history
         aligned_test = self._source_slice(df, {TEST_HISTORY_LIVE_ANCHORED_SOURCE})
         if self._candidate_is_aligned(aligned_test, timeframe, live_price, live_time):
             return aligned_test
@@ -378,10 +395,14 @@ class RecentHistoryWarmupService:
 
 
 class DataIntegrityEngine:
-    def __init__(self, store: SQLiteCandleStore):
+    def __init__(
+        self,
+        store: SQLiteCandleStore,
+        preferred_source: Optional[Callable[[], Optional[str]]] = None,
+    ):
         self.store = store
         self.warmup = RecentHistoryWarmupService(store)
-        self.alignment = CandleHistoryAlignmentEngine(store)
+        self.alignment = CandleHistoryAlignmentEngine(store, preferred_source)
 
     def data_integrity(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
         return self._build(timeframe, limit)["data_integrity"]
@@ -487,6 +508,11 @@ class DataIntegrityEngine:
     def indicator_panels(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
         built = self._build(timeframe, limit)
         df = built["frames"]["analysis"]
+        if not df.empty and "is_complete" in df.columns:
+            complete = pd.to_numeric(df["is_complete"], errors="coerce").fillna(0) == 1
+            if "is_partial" in df.columns:
+                complete &= pd.to_numeric(df["is_partial"], errors="coerce").fillna(0) == 0
+            df = df.loc[complete].copy()
         data_mode = built["data_integrity"].get("data_mode")
         if data_mode == "GAP_WARNING":
             return {
@@ -516,7 +542,7 @@ class DataIntegrityEngine:
                 },
                 "data_integrity": built["data_integrity"],
             }
-        if df.empty or len(df) < 5:
+        if df.empty or len(df) < 35:
             return {
                 "symbol": "XAUUSD",
                 "timeframe": built["timeframe"],
@@ -541,6 +567,7 @@ class DataIntegrityEngine:
                 "bearishness": bearishness,
                 "indicator_snapshot": self._indicator_snapshot(boys_selling, bearishness),
                 "market_pressure_score": pressure,
+                "engine_version": "MOMENTUM_V2_CLOSED_CANDLE",
             },
             "data_integrity": built["data_integrity"],
         }
@@ -647,7 +674,17 @@ class DataIntegrityEngine:
         test_data_present = any(self.store.has_source(tf, source) for source in TEST_HISTORY_SOURCES)
         recent_csv_present = self.store.has_source(tf, RECENT_CSV_SOURCE) or self.store.has_source(tf, USER_RECENT_CSV_SOURCE) or self.store.has_source(tf, REAL_CSV_HISTORY_SOURCE)
         twelve_data_present = self.store.has_source(tf, TWELVE_DATA_HISTORY_SOURCE)
-        matched_provider_present = self.store.has_source(tf, OANDA_HISTORY_SOURCE) or self.store.has_source(tf, BINANCE_HISTORY_SOURCE)
+        matched_sources = [OANDA_HISTORY_SOURCE, BINANCE_HISTORY_SOURCE]
+        configured_source = self.alignment._configured_source()
+        matched_provider_source = next(
+            (
+                source
+                for source in [configured_source, *matched_sources]
+                if source and self.store.has_source(tf, source)
+            ),
+            None,
+        )
+        matched_provider_present = matched_provider_source is not None
         real_recent_history_present = bool(has_real_history and (recent_csv_present or twelve_data_present or matched_provider_present or self.store.has_source(tf, PRELOADED_SOURCE) or self.store.has_source(tf, WARMUP_SOURCE)))
         if cleaned.empty:
             status = "NO_HISTORY"
@@ -704,13 +741,7 @@ class DataIntegrityEngine:
             "recent_csv_history_present": recent_csv_present,
             "twelve_data_history_present": twelve_data_present,
             "matched_provider_history_present": matched_provider_present,
-            "matched_provider_source": (
-                OANDA_HISTORY_SOURCE
-                if self.store.has_source(tf, OANDA_HISTORY_SOURCE)
-                else BINANCE_HISTORY_SOURCE
-                if self.store.has_source(tf, BINANCE_HISTORY_SOURCE)
-                else None
-            ),
+            "matched_provider_source": matched_provider_source,
             "real_recent_history_present": real_recent_history_present,
             "user_recent_csv_present": self.store.has_source(tf, USER_RECENT_CSV_SOURCE),
             "real_csv_history_present": self.store.has_source(tf, REAL_CSV_HISTORY_SOURCE),
@@ -937,16 +968,27 @@ class DataIntegrityEngine:
             return {"data_mode": "REAL", "label": "REAL", "description": "Recent real history + live price"}
         return {"data_mode": "NO_DATA", "label": "NO DATA", "description": "No live price or candle history"}
 
-    def _indicator_data(self, df: pd.DataFrame) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], Dict[str, float]]:
+    def _indicator_data(self, df: pd.DataFrame) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], Dict[str, Any]]:
         if df.empty or len(df) < 35:
             return [], [], {"bullish": 0, "bearish": 0, "neutral": 100}
-        frame = df.tail(180).copy()
+        frame = df.sort_index().tail(240).copy()
         close = pd.to_numeric(frame["close"], errors="coerce")
+        high = pd.to_numeric(frame["high"], errors="coerce")
+        low = pd.to_numeric(frame["low"], errors="coerce")
         ema_12 = close.ewm(span=12, adjust=False, min_periods=12).mean()
         ema_26 = close.ewm(span=26, adjust=False, min_periods=26).mean()
         macd = ema_12 - ema_26
         macd_signal = macd.ewm(span=9, adjust=False, min_periods=9).mean()
         macd_histogram = macd - macd_signal
+        histogram_delta = macd_histogram.diff()
+
+        previous_close = close.shift(1)
+        true_range = pd.concat([
+            (high - low).abs(),
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
 
         delta = close.diff()
         average_gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
@@ -956,6 +998,8 @@ class DataIntegrityEngine:
         rsi = rsi.mask((average_loss == 0) & (average_gain > 0), 100.0)
         rsi = rsi.mask((average_gain == 0) & (average_loss > 0), 0.0)
         rsi = rsi.fillna(50.0)
+        rsi_average = rsi.ewm(span=9, adjust=False, min_periods=3).mean()
+        rsi_slope = rsi.diff(3)
 
         macd_records: list[Dict[str, Any]] = []
         rsi_records: list[Dict[str, Any]] = []
@@ -964,42 +1008,80 @@ class DataIntegrityEngine:
             if timestamp.tzinfo is not None:
                 timestamp = timestamp.tz_convert("UTC").tz_localize(None)
             histogram_value = macd_histogram.loc[time]
+            macd_value = macd.loc[time]
+            signal_value = macd_signal.loc[time]
+            delta_value = histogram_delta.loc[time]
             rsi_value = rsi.loc[time]
-            if pd.notna(histogram_value):
+            atr_value = atr.loc[time]
+            if pd.notna(histogram_value) and pd.notna(macd_value) and pd.notna(signal_value):
                 value = float(histogram_value)
+                delta_number = float(delta_value) if pd.notna(delta_value) else 0.0
+                if value >= 0:
+                    phase = "BULLISH_EXPANSION" if delta_number >= 0 else "BULLISH_FADE"
+                else:
+                    phase = "BEARISH_EXPANSION" if delta_number <= 0 else "BEARISH_FADE"
+                atr_number = float(atr_value) if pd.notna(atr_value) and float(atr_value) > 0 else 0.0
+                strength = min(100.0, abs(value) / (atr_number * 0.12) * 100.0) if atr_number else 0.0
                 macd_records.append({
                     "time": int(timestamp.timestamp()),
                     "value": round(value, 6),
-                    "color": "green" if value >= 0 else "red",
+                    "macd_line": round(float(macd_value), 6),
+                    "signal_line": round(float(signal_value), 6),
+                    "delta": round(delta_number, 6),
+                    "strength": round(strength, 1),
+                    "phase": phase,
+                    "close": round(float(close.loc[time]), 6),
+                    "high": round(float(high.loc[time]), 6),
+                    "low": round(float(low.loc[time]), 6),
+                    "color": "bull-strong" if phase == "BULLISH_EXPANSION" else "bull-fade" if phase == "BULLISH_FADE" else "bear-strong" if phase == "BEARISH_EXPANSION" else "bear-fade",
                 })
             if pd.notna(rsi_value):
                 centered_rsi = float(rsi_value) - 50
+                slope_value = float(rsi_slope.loc[time]) if pd.notna(rsi_slope.loc[time]) else 0.0
+                average_value = float(rsi_average.loc[time]) if pd.notna(rsi_average.loc[time]) else float(rsi_value)
+                raw_rsi = float(rsi_value)
+                zone = "OVERBOUGHT" if raw_rsi >= 70 else "OVERSOLD" if raw_rsi <= 30 else "BULLISH" if raw_rsi >= 55 else "BEARISH" if raw_rsi <= 45 else "NEUTRAL"
                 rsi_records.append({
                     "time": int(timestamp.timestamp()),
                     "value": round(centered_rsi, 4),
-                    "raw_value": round(float(rsi_value), 4),
-                    "color": "green" if centered_rsi >= 0 else "blue",
+                    "raw_value": round(raw_rsi, 4),
+                    "average": round(average_value, 4),
+                    "slope": round(slope_value, 4),
+                    "zone": zone,
+                    "close": round(float(close.loc[time]), 6),
+                    "high": round(float(high.loc[time]), 6),
+                    "low": round(float(low.loc[time]), 6),
+                    "color": "overbought" if raw_rsi >= 70 else "oversold" if raw_rsi <= 30 else "bullish" if raw_rsi >= 55 else "bearish" if raw_rsi <= 45 else "neutral",
                 })
 
-        recent_macd = [float(item["value"]) for item in macd_records[-20:]]
-        latest_rsi = float(rsi_records[-1]["raw_value"]) if rsi_records else 50.0
-        positive_macd = sum(1 for value in recent_macd if value > 0)
-        negative_macd = sum(1 for value in recent_macd if value < 0)
-        sample_count = max(len(recent_macd), 1)
-        macd_bullish = positive_macd / sample_count * 50
-        macd_bearish = negative_macd / sample_count * 50
-        rsi_bullish = max(0.0, min(50.0, latest_rsi - 50.0))
-        rsi_bearish = max(0.0, min(50.0, 50.0 - latest_rsi))
-        bullish = macd_bullish + rsi_bullish
-        bearish = macd_bearish + rsi_bearish
-        total = bullish + bearish
-        if total > 100:
-            bullish = bullish / total * 100
-            bearish = bearish / total * 100
+        valid_pressure = pd.DataFrame({
+            "histogram": macd_histogram,
+            "macd_spread": macd - macd_signal,
+            "atr": atr,
+            "rsi": rsi,
+            "rsi_slope": rsi_slope,
+        }).dropna().tail(5)
+        if valid_pressure.empty:
+            composite = 0.0
+        else:
+            atr_scale = (valid_pressure["atr"] * 0.12).replace(0, pd.NA)
+            histogram_score = (valid_pressure["histogram"] / atr_scale).clip(-1, 1).fillna(0)
+            spread_score = (valid_pressure["macd_spread"] / atr_scale).clip(-1, 1).fillna(0)
+            rsi_score = ((valid_pressure["rsi"] - 50) / 20).clip(-1, 1)
+            slope_score = (valid_pressure["rsi_slope"] / 8).clip(-1, 1)
+            composite_series = histogram_score * 0.35 + spread_score * 0.20 + rsi_score * 0.30 + slope_score * 0.15
+            composite = float(composite_series.mean())
+        composite = max(-1.0, min(1.0, composite))
+        neutral = max(8.0, 38.0 * (1.0 - abs(composite)))
+        directional = 100.0 - neutral
+        bullish = directional * (composite + 1.0) / 2.0
+        bearish = directional - bullish
         pressure = {
             "bullish": round(bullish, 2),
             "bearish": round(bearish, 2),
-            "neutral": round(max(0.0, 100.0 - bullish - bearish), 2),
+            "neutral": round(neutral, 2),
+            "score": round(composite * 100),
+            "state": "BULLISH" if composite >= 0.18 else "BEARISH" if composite <= -0.18 else "BALANCED",
         }
         return macd_records, rsi_records, pressure
 
@@ -1013,10 +1095,25 @@ class DataIntegrityEngine:
 
         latest_macd = float(macd_records[-1]["value"])
         previous_macd = float(macd_records[-2]["value"]) if len(macd_records) > 1 else latest_macd
+        latest_macd_line = float(macd_records[-1].get("macd_line", latest_macd))
+        previous_macd_line = float(macd_records[-2].get("macd_line", latest_macd_line)) if len(macd_records) > 1 else latest_macd_line
+        latest_signal_line = float(macd_records[-1].get("signal_line", 0.0))
+        previous_signal_line = float(macd_records[-2].get("signal_line", latest_signal_line)) if len(macd_records) > 1 else latest_signal_line
         latest_rsi = float(rsi_records[-1].get("raw_value", 50.0))
         previous_rsi = float(rsi_records[-2].get("raw_value", latest_rsi)) if len(rsi_records) > 1 else latest_rsi
-        recent_peak = max((abs(float(item["value"])) for item in macd_records[-30:]), default=0.0)
-        macd_strength = min(100.0, abs(latest_macd) / recent_peak * 100.0) if recent_peak else 0.0
+        latest_rsi_average = float(rsi_records[-1].get("average", latest_rsi))
+        latest_rsi_slope = float(rsi_records[-1].get("slope", latest_rsi - previous_rsi))
+        macd_strength = float(macd_records[-1].get("strength", 0.0))
+        macd_phase = str(macd_records[-1].get("phase") or "NEUTRAL")
+        macd_divergence = DataIntegrityEngine._indicator_divergence(macd_records, "macd_line")
+        rsi_divergence = DataIntegrityEngine._indicator_divergence(rsi_records, "raw_value", 2.0)
+
+        if previous_macd_line <= previous_signal_line and latest_macd_line > latest_signal_line:
+            macd_cross = "BULLISH_CROSS"
+        elif previous_macd_line >= previous_signal_line and latest_macd_line < latest_signal_line:
+            macd_cross = "BEARISH_CROSS"
+        else:
+            macd_cross = "ABOVE_SIGNAL" if latest_macd_line > latest_signal_line else "BELOW_SIGNAL" if latest_macd_line < latest_signal_line else "AT_SIGNAL"
 
         if latest_rsi >= 70:
             rsi_zone = "OVERBOUGHT"
@@ -1031,10 +1128,46 @@ class DataIntegrityEngine:
 
         if latest_macd > 0 and latest_rsi >= 52:
             confluence = "ALIGNED_BULLISH"
+            direction = "BULLISH"
         elif latest_macd < 0 and latest_rsi <= 48:
             confluence = "ALIGNED_BEARISH"
+            direction = "BEARISH"
         else:
             confluence = "MIXED"
+            direction = "MIXED"
+
+        bullish_quality = (
+            (25 if latest_macd > 0 else 0)
+            + (20 if latest_macd_line > latest_signal_line else 0)
+            + (15 if macd_phase == "BULLISH_EXPANSION" else 6 if macd_phase == "BULLISH_FADE" else 0)
+            + (20 if latest_rsi >= 52 else 8 if latest_rsi >= 48 else 0)
+            + (10 if latest_rsi > latest_rsi_average else 0)
+            + (10 if latest_rsi_slope > 0 else 0)
+        )
+        bearish_quality = (
+            (25 if latest_macd < 0 else 0)
+            + (20 if latest_macd_line < latest_signal_line else 0)
+            + (15 if macd_phase == "BEARISH_EXPANSION" else 6 if macd_phase == "BEARISH_FADE" else 0)
+            + (20 if latest_rsi <= 48 else 8 if latest_rsi <= 52 else 0)
+            + (10 if latest_rsi < latest_rsi_average else 0)
+            + (10 if latest_rsi_slope < 0 else 0)
+        )
+        if macd_divergence == "BULLISH" or rsi_divergence == "BULLISH":
+            bullish_quality += 5
+        if macd_divergence == "BEARISH" or rsi_divergence == "BEARISH":
+            bearish_quality += 5
+        quality_score = min(100, max(bullish_quality, bearish_quality))
+        quality_grade = "A" if quality_score >= 80 else "B" if quality_score >= 70 else "C" if quality_score >= 60 else "D"
+        opposing_divergence = (
+            direction == "BULLISH" and "BEARISH" in {macd_divergence, rsi_divergence}
+        ) or (
+            direction == "BEARISH" and "BULLISH" in {macd_divergence, rsi_divergence}
+        )
+        confirmation = (
+            "CAUTION_DIVERGENCE" if opposing_divergence
+            else f"CONFIRMED_{direction}" if direction != "MIXED" and quality_score >= 60
+            else "WAIT"
+        )
 
         return {
             "status": "READY",
@@ -1043,19 +1176,65 @@ class DataIntegrityEngine:
             "macd": {
                 "histogram": round(latest_macd, 6),
                 "previous": round(previous_macd, 6),
+                "line": round(latest_macd_line, 6),
+                "signal": round(latest_signal_line, 6),
                 "bias": "BULLISH" if latest_macd > 0 else "BEARISH" if latest_macd < 0 else "NEUTRAL",
                 "momentum": "RISING" if latest_macd > previous_macd else "FALLING" if latest_macd < previous_macd else "FLAT",
                 "strength": round(macd_strength, 1),
+                "phase": macd_phase,
+                "cross": macd_cross,
+                "divergence": macd_divergence,
             },
             "rsi": {
                 "value": round(latest_rsi, 2),
                 "previous": round(previous_rsi, 2),
+                "average": round(latest_rsi_average, 2),
+                "slope": round(latest_rsi_slope, 2),
                 "zone": rsi_zone,
-                "momentum": "RISING" if latest_rsi > previous_rsi else "FALLING" if latest_rsi < previous_rsi else "FLAT",
+                "momentum": "RISING" if latest_rsi_slope > 0 else "FALLING" if latest_rsi_slope < 0 else "FLAT",
+                "divergence": rsi_divergence,
             },
             "confluence": confluence,
-            "decision_use": "CONTEXT_ONLY",
+            "direction": direction,
+            "confirmation": confirmation,
+            "quality_score": quality_score,
+            "quality_grade": quality_grade,
+            "decision_use": "CONFIRMATION_ONLY",
+            "engine_version": "MOMENTUM_V2_CLOSED_CANDLE",
         }
+
+    @staticmethod
+    def _indicator_divergence(
+        records: list[Dict[str, Any]],
+        indicator_key: str,
+        minimum_indicator_gap: float = 0.0,
+    ) -> str:
+        sample = records[-40:]
+        if len(sample) < 20:
+            return "NONE"
+        midpoint = len(sample) // 2
+        previous, current = sample[:midpoint], sample[midpoint:]
+        try:
+            previous_low = min(previous, key=lambda item: float(item["low"]))
+            current_low = min(current, key=lambda item: float(item["low"]))
+            previous_high = max(previous, key=lambda item: float(item["high"]))
+            current_high = max(current, key=lambda item: float(item["high"]))
+            indicator_values = [float(item[indicator_key]) for item in sample]
+        except (KeyError, TypeError, ValueError):
+            return "NONE"
+        indicator_range = max(indicator_values) - min(indicator_values)
+        indicator_gap = max(float(minimum_indicator_gap), indicator_range * 0.08)
+        price_reference = max(abs(float(previous_low["low"])), abs(float(previous_high["high"])), 1.0)
+        price_gap = price_reference * 0.00015
+        bullish = (
+            float(current_low["low"]) < float(previous_low["low"]) - price_gap
+            and float(current_low[indicator_key]) > float(previous_low[indicator_key]) + indicator_gap
+        )
+        bearish = (
+            float(current_high["high"]) > float(previous_high["high"]) + price_gap
+            and float(current_high[indicator_key]) < float(previous_high[indicator_key]) - indicator_gap
+        )
+        return "BULLISH" if bullish else "BEARISH" if bearish else "NONE"
 
     def _load_csv_candles(self, csv_path: str) -> list[Dict[str, Any]]:
         path = Path(csv_path)

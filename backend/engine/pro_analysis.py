@@ -27,10 +27,17 @@ from .xauusd_provider import (
 class ProAnalysisEngineV3:
     REQUIRED_TIMEFRAMES = ["1D", "4H", "1H", "15M", "5M"]
 
-    def __init__(self, store: SQLiteCandleStore, cache: Any = None, symbol: str = "XAUUSD"):
+    def __init__(
+        self,
+        store: SQLiteCandleStore,
+        cache: Any = None,
+        symbol: str = "XAUUSD",
+        preferred_source: Optional[Callable[[], Optional[str]]] = None,
+    ):
         self.store = store
         self.cache = cache
         self.symbol = str(symbol or "XAUUSD").upper()
+        self.preferred_source = preferred_source
         self._active_source_label = "AUTO"
         self._active_sources: set[str] | None = None
 
@@ -170,6 +177,14 @@ class ProAnalysisEngineV3:
         if locked_mode == "TEST_MODE":
             return set(TEST_HISTORY_SOURCES), "TEST_HISTORY_ONLY"
         if locked_mode == "REAL_MODE":
+            configured_source = None
+            if self.preferred_source:
+                try:
+                    configured_source = self.preferred_source()
+                except Exception:
+                    configured_source = None
+            if configured_source:
+                return {configured_source}, configured_source
             priority = [
                 (OANDA_HISTORY_SOURCE, {OANDA_HISTORY_SOURCE}),
                 (BINANCE_HISTORY_SOURCE, {BINANCE_HISTORY_SOURCE}),
@@ -180,7 +195,12 @@ class ProAnalysisEngineV3:
                 (WARMUP_SOURCE, {WARMUP_SOURCE}),
                 (PRELOADED_SOURCE, {PRELOADED_SOURCE}),
             ]
-            for label, sources in priority:
+            seen: set[str] = set()
+            for item in priority:
+                label, sources = item
+                if label in seen:
+                    continue
+                seen.add(label)
                 if self._source_has_required_counts(source_counts, sources):
                     return sources, label
             return set(REAL_RECENT_SOURCES), "REAL_RECENT_MIXED"

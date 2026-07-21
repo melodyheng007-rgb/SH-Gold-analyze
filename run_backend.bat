@@ -4,6 +4,7 @@ title SH Market Analyzer V3.8 - Backend
 cd /d "%~dp0backend"
 
 set "BACKEND_URL=http://127.0.0.1:8001"
+set "SH_LOCAL_OWNER_MODE=true"
 set "VENV_PY=.venv\Scripts\python.exe"
 set "PYTHON_CMD="
 

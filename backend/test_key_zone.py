@@ -706,6 +706,135 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertGreater(adaptive["min_entry_quality"], base["min_entry_quality"])
         self.assertLess(adaptive["max_live_chase_atr"], base["max_live_chase_atr"])
 
+    def test_adaptive_density_merges_nearby_choppy_origins_but_keeps_stronger_zone(self) -> None:
+        profile = self.engine._profile("XAUUSD", "5M") | {
+            "zone_merge_distance_atr": 0.30,
+            "zone_merge_window_bars": 8,
+        }
+        candidates = [
+            {"id": "weak", "direction": "BULLISH", "line": 100.0, "atr_14": 2.0, "bar_index": 30, "time": 30, "score": 62, "origin_quality_score": 64, "entry_eligible_origin": True},
+            {"id": "strong", "direction": "BULLISH", "line": 100.2, "atr_14": 2.0, "bar_index": 34, "time": 34, "score": 72, "origin_quality_score": 78, "entry_eligible_origin": True},
+            {"id": "separate", "direction": "BEARISH", "line": 100.1, "atr_14": 2.0, "bar_index": 35, "time": 35, "score": 68, "origin_quality_score": 70, "entry_eligible_origin": True},
+        ]
+
+        selected = self.engine._distinct_recent(candidates, 10, profile)
+
+        self.assertEqual({item["id"] for item in selected}, {"strong", "separate"})
+
+    def test_scalp_and_swing_profiles_adjust_timing_without_lowering_quality(self) -> None:
+        base_5m = self.engine._profile("XAUUSD", "5M")
+        scalp = self.engine._style_adjusted_profile(base_5m, "SCALPING", "5M")
+        base_1h = self.engine._profile("XAUUSD", "1H")
+        swing = self.engine._style_adjusted_profile(base_1h, "SWING", "1H")
+
+        self.assertEqual(scalp["target_diamonds_per_100_bars"], "3-6")
+        self.assertLess(scalp["entry_cooldown_bars"], base_5m["entry_cooldown_bars"])
+        self.assertEqual(scalp["min_entry_quality"], base_5m["min_entry_quality"])
+        self.assertEqual(swing["target_diamonds_per_100_bars"], "2-4")
+        self.assertGreater(swing["lead_zone_max_age_bars"], base_1h["lead_zone_max_age_bars"])
+        self.assertEqual(swing["min_entry_quality"], base_1h["min_entry_quality"])
+
+    def test_scalp_lead_floor_adapts_without_lowering_confirmed_entry_quality(self) -> None:
+        base = self.engine._profile("XAUUSD", "5M")
+
+        quiet = self.engine._style_adjusted_profile(
+            base | {"adaptive_regime": "QUIET"},
+            "SCALPING",
+            "5M",
+        )
+        normal = self.engine._style_adjusted_profile(
+            base | {"adaptive_regime": "NORMAL"},
+            "SCALPING",
+            "5M",
+        )
+        elevated = self.engine._style_adjusted_profile(
+            base | {"adaptive_regime": "ELEVATED"},
+            "SCALPING",
+            "5M",
+        )
+
+        self.assertEqual((quiet["lead_diamond_score"], normal["lead_diamond_score"], elevated["lead_diamond_score"]), (64, 66, 70))
+        self.assertEqual(quiet["min_entry_quality"], base["min_entry_quality"])
+        self.assertEqual(normal["min_entry_quality"], base["min_entry_quality"])
+        self.assertEqual(elevated["min_entry_quality"], base["min_entry_quality"])
+
+    def test_scalp_wick_rejection_publishes_one_sell_key_zone_at_candle_high(self) -> None:
+        candles = base_candles(38)
+        origin_time = candles[30]["time"]
+        candles[30].update(open=100.0, high=104.0, low=99.8, close=102.0)
+        for index in range(31, len(candles)):
+            candles[index].update(open=101.8, high=102.4, low=101.4, close=101.9)
+
+        result = self.engine.calculate(
+            candles,
+            "5M",
+            "MATCHED_PROVIDER",
+            session_context={"stance": "BULLISH"},
+            symbol="XAUUSD",
+            trading_style="SCALPING",
+        )
+        rejection_zones = [
+            zone for zone in result["zones"]
+            if zone.get("origin_model") == "SCALP_WICK_REJECTION"
+        ]
+
+        self.assertEqual(len(rejection_zones), 1)
+        zone = rejection_zones[0]
+        self.assertEqual(zone["time"], origin_time)
+        self.assertEqual(zone["entry_side"], "SELL")
+        self.assertEqual(zone["line"], 104.0)
+        self.assertTrue(zone["display_as_diamond"])
+        self.assertTrue(zone["is_lead_diamond"])
+        self.assertFalse(zone["entry_eligible_origin"])
+        self.assertIn("SCALP_COUNTERTREND_WATCH", zone["diamond_confidence_reasons"])
+        self.assertEqual(result["entry_events"], [])
+
+    def test_scalp_wick_rejection_ignores_small_or_weak_wick_candles(self) -> None:
+        rows = self.engine._candles(base_candles(38))
+        profile = self.engine._style_adjusted_profile(
+            self.engine._profile("XAUUSD", "5M"),
+            "SCALPING",
+            "5M",
+        )
+        rows[30].update(open=100.0, high=101.1, low=99.9, close=101.0)
+
+        candidate = self.engine._scalp_wick_rejection_candidate(
+            rows,
+            30,
+            1.1,
+            profile,
+            "MIXED",
+        )
+
+        self.assertIsNone(candidate)
+
+    def test_news_shock_guard_suppresses_new_entry_but_preserves_history_policy(self) -> None:
+        candles = base_candles(35)
+        candles[30].update(open=100.0, high=103.20, low=99.0, close=103.0)
+        candles[31].update(open=102.8, high=103.2, low=102.2, close=102.6)
+        candles[32].update(open=102.5, high=102.8, low=101.7, close=102.1)
+        candles[33].update(open=99.20, high=99.90, low=98.95, close=99.75)
+        candles[34].update(open=99.70, high=100.40, low=99.60, close=100.25)
+
+        result = self.engine.calculate(
+            candles,
+            "5M",
+            "MATCHED_PROVIDER",
+            analysis_context={
+                "news_intelligence": {
+                    "execution_gate": "BLOCK_NEW_ENTRIES",
+                    "summary": "High-impact release window",
+                    "primary_event": {"title": "US CPI"},
+                },
+            },
+        )
+
+        self.assertEqual(result["news_shock_guard"]["status"], "LOCKED")
+        self.assertTrue(result["news_shock_guard"]["history_preserved"])
+        self.assertEqual(result["lead_diamond_status"], "SCANNING")
+        self.assertEqual(result["entry_events"], [])
+        self.assertIn("High-impact", result["next_trigger"])
+
     def test_same_side_cooldown_keeps_spatially_distinct_zones(self) -> None:
         profile = self.engine._profile("XAUUSD", "5M")
         events = [

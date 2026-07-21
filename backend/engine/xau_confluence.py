@@ -80,7 +80,7 @@ class XAUPrecisionConfluenceEngine:
         trusted = trust.get("trusted") is True
 
         checks = [
-            self._check("data_trust", "Matched XAU Feed", trusted, 0, trust.get("reason") or "Matched OANDA XAUUSD history is required.", True),
+            self._check("data_trust", "Matched XAU Feed", trusted, 0, trust.get("reason") or "Matched XAU/USD provider history is required.", True),
             self._check("htf", "1D / 4H Direction", htf.get("bias") == expected_bias and direction != "WAIT", 14, htf.get("reason") or "Wait for aligned 1D and 4H structure.", True),
             self._check("liquidity", "Liquidity Event", has_sweep, 14, liquidity.get("reason") or "Wait for a mapped liquidity sweep.", True),
             self._check("price_location", "Premium / Discount", price_location_aligned, 8, f"{location} location; avoid mid-range entries.", False),
@@ -211,7 +211,7 @@ class XAUPrecisionConfluenceEngine:
     def _diamond_reason(zones: Dict[str, Any], mtf: Dict[str, Any]) -> str:
         primary = zones.get("primary_zone") or {}
         if zones.get("execution_trusted") is not True:
-            return "Diamond Zone is research-only until XAU history matches the expected OANDA feed."
+            return "Diamond Zone is research-only until XAU history matches the selected market feed."
         if zones.get("execution_quality") not in {"READY", "WATCH"}:
             return f"Diamond Zone execution quality is {str(zones.get('execution_quality') or 'waiting').replace('_', ' ').lower()}."
         return (

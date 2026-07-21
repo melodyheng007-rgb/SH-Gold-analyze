@@ -152,7 +152,7 @@ class FeedReconciliationEngine:
             "timezone_source": zone_source,
             "exchange_time": local.isoformat(),
             "reason": (
-                "XAU/USD is inside the configured OANDA trading session."
+                "XAU/USD is inside the configured market-data session."
                 if market_open
                 else "XAU/USD is inside the scheduled weekend or daily maintenance closure."
             ),

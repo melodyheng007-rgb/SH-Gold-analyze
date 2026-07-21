@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
 import requests
@@ -140,7 +140,7 @@ class ProviderSettings:
     def __init__(self, settings_path: str):
         self.settings_path = Path(settings_path)
         self._lock = threading.RLock()
-        self._migrate_oanda_token()
+        self._migrate_secret("oanda_api_token")
 
     def get(self, name: str) -> str:
         env_name = {
@@ -153,7 +153,7 @@ class ProviderSettings:
             return value.strip()
         data = self._load()
         if name == "oanda_api_token":
-            protected = str(data.get("oanda_api_token_protected") or "").strip()
+            protected = str(data.get(f"{name}_protected") or "").strip()
             if protected:
                 try:
                     return str(_windows_unprotect_secret(protected) or "").strip()
@@ -164,11 +164,16 @@ class ProviderSettings:
     def update(self, values: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             data = self._load_unlocked()
-            for key in ["goldapi_key", "goldapi_io_key", "twelve_data_api_key", "oanda_api_token"]:
+            for key in [
+                "goldapi_key",
+                "goldapi_io_key",
+                "twelve_data_api_key",
+                "oanda_api_token",
+            ]:
                 value = str(values.get(key, "")).strip()
                 if value:
                     if key == "oanda_api_token":
-                        self._store_oanda_token(data, value)
+                        self._store_secret(data, key, value)
                     else:
                         data[key] = value
             if "oanda_environment" in values:
@@ -196,7 +201,7 @@ class ProviderSettings:
                 "oanda_environment": selected_environment,
                 "oanda_verified_at": verified_at or datetime.now(timezone.utc).isoformat(),
             })
-            self._store_oanda_token(data, access_token)
+            self._store_secret(data, "oanda_api_token", access_token)
             self._write_unlocked(data)
         return self.masked_status()
 
@@ -280,28 +285,28 @@ class ProviderSettings:
             if temporary.exists():
                 temporary.unlink(missing_ok=True)
 
-    def _store_oanda_token(self, data: Dict[str, Any], token: str) -> None:
-        protected = _windows_protect_secret(token)
+    def _store_secret(self, data: Dict[str, Any], key: str, value: str) -> None:
+        protected = _windows_protect_secret(value)
         if protected:
-            data["oanda_api_token_protected"] = protected
-            data.pop("oanda_api_token", None)
+            data[f"{key}_protected"] = protected
+            data.pop(key, None)
         else:
-            data["oanda_api_token"] = token
+            data[key] = value
 
-    def _migrate_oanda_token(self) -> None:
+    def _migrate_secret(self, key: str) -> None:
         if os.name != "nt":
             return
         with self._lock:
             data = self._load_unlocked()
-            token = str(data.get("oanda_api_token") or "").strip()
-            if data.get("oanda_api_token_protected"):
-                if token:
-                    data.pop("oanda_api_token", None)
+            value = str(data.get(key) or "").strip()
+            if data.get(f"{key}_protected"):
+                if value:
+                    data.pop(key, None)
                     self._write_unlocked(data)
                 return
-            if not token:
+            if not value:
                 return
-            self._store_oanda_token(data, token)
+            self._store_secret(data, key, value)
             self._write_unlocked(data)
 
 
@@ -1076,9 +1081,12 @@ class OandaHistoryService:
     def __init__(self, settings: ProviderSettings, store: SQLiteCandleStore):
         self.settings = settings
         self.store = store
+        self._session = requests.Session()
         self._dns_cache: Dict[str, tuple[float, list[str]]] = {}
         self._dns_lock = threading.Lock()
         self._transport_state = threading.local()
+        self._live_sync_lock = threading.RLock()
+        self._live_sync_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
 
     @staticmethod
     def _endpoint_host(environment: str) -> str:
@@ -1225,11 +1233,11 @@ class OandaHistoryService:
         )
         if resolution_error:
             return self._request_via_public_dns(host, path, params, headers)
-        response = requests.get(
+        response = self._session.get(
             f"https://{host}{path}",
             params=params,
             headers=headers,
-            timeout=20,
+            timeout=(5, 12),
         )
         response.raise_for_status()
         return response.json()
@@ -1321,7 +1329,7 @@ class OandaHistoryService:
         rows.sort(key=lambda candle: candle["timestamp"])
         return list({candle["timestamp"]: candle for candle in rows}.values())
 
-    def sync_live_candle(self, timeframe: str) -> Dict[str, Any]:
+    def sync_live_candle(self, timeframe: str, min_interval_seconds: float = 1.5) -> Dict[str, Any]:
         self._transport_state.dns_recovery = False
         tf = normalize_timeframe(timeframe)
         token = self.settings.get("oanda_api_token")
@@ -1334,20 +1342,38 @@ class OandaHistoryService:
                 "source": self.source,
                 "message": "OANDA API token is missing.",
             }
-        try:
-            candles = self._fetch_timeframe(tf, token, environment, include_incomplete=True, count=3)
-            result = _persist_chart_candles(self.store, tf, candles, self.source, self.provider_name)
-            result["environment"] = environment
-            result["dns_recovery"] = bool(getattr(self._transport_state, "dns_recovery", False))
-            return result
-        except Exception as exc:
-            return {
-                "ok": False,
-                "status": "LIVE_CANDLE_SYNC_FAILED",
-                "provider": self.provider_name,
-                "source": self.source,
-                "message": str(exc),
-            }
+        cache_key = f"{environment}:{tf}"
+        minimum_interval = max(0.5, float(min_interval_seconds))
+        with self._live_sync_lock:
+            now = time.monotonic()
+            cached = self._live_sync_cache.get(cache_key)
+            if cached and now - cached[0] < minimum_interval:
+                result = dict(cached[1])
+                result["cache_hit"] = True
+                result["cache_age_ms"] = round((now - cached[0]) * 1000)
+                return result
+
+            started = time.perf_counter()
+            try:
+                candles = self._fetch_timeframe(tf, token, environment, include_incomplete=True, count=3)
+                result = _persist_chart_candles(self.store, tf, candles, self.source, self.provider_name)
+                result["environment"] = environment
+                result["dns_recovery"] = bool(getattr(self._transport_state, "dns_recovery", False))
+                result["provider_latency_ms"] = round((time.perf_counter() - started) * 1000)
+                result["cache_hit"] = False
+                result["cache_age_ms"] = 0
+                self._live_sync_cache[cache_key] = (time.monotonic(), dict(result))
+                return result
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "status": "LIVE_CANDLE_SYNC_FAILED",
+                    "provider": self.provider_name,
+                    "source": self.source,
+                    "provider_latency_ms": round((time.perf_counter() - started) * 1000),
+                    "cache_hit": False,
+                    "message": str(exc),
+                }
 
     def verify_connection(self, token: Optional[str] = None, environment: Optional[str] = None) -> Dict[str, Any]:
         self._transport_state.dns_recovery = False
@@ -2667,9 +2693,15 @@ class CandleEngineQualityValidator:
 
 
 class CandleHealthService:
-    def __init__(self, store: SQLiteCandleStore, builder: Optional[LocalCandleBuilder] = None):
+    def __init__(
+        self,
+        store: SQLiteCandleStore,
+        builder: Optional[LocalCandleBuilder] = None,
+        preferred_source: Optional[Callable[[], Optional[str]]] = None,
+    ):
         self.store = store
         self.builder = builder
+        self.preferred_source = preferred_source
 
     def health(self, timeframe: str = "15M", limit: int = 1000) -> Dict[str, Any]:
         tf = normalize_timeframe(timeframe)
@@ -2712,6 +2744,14 @@ class CandleHealthService:
         }
 
     def _preferred_sources(self, timeframe: str) -> tuple[Optional[set[str]], str]:
+        configured_source = None
+        if self.preferred_source:
+            try:
+                configured_source = self.preferred_source()
+            except Exception:
+                configured_source = None
+        if configured_source:
+            return {configured_source}, configured_source
         priority = [
             (OANDA_HISTORY_SOURCE, {OANDA_HISTORY_SOURCE}),
             (BINANCE_HISTORY_SOURCE, {BINANCE_HISTORY_SOURCE}),
@@ -2721,7 +2761,12 @@ class CandleHealthService:
             (RECENT_CSV_SOURCE, {RECENT_CSV_SOURCE}),
             (LIVE_SOURCE, {LIVE_SOURCE, LIVE_BUILDER_SOURCE}),
         ]
-        for label, sources in priority:
+        seen: set[str] = set()
+        for item in priority:
+            label, sources = item
+            if label in seen:
+                continue
+            seen.add(label)
             if any(self.store.has_source(timeframe, source) for source in sources):
                 return sources, label
         return None, "AUTO"

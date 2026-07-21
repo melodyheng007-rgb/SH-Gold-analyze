@@ -64,8 +64,8 @@ import {
   getEngineLogs,
   getEngineStatus,
   getHealth,
+  getMarketCandleTick,
   getMarketChartSnapshot,
-  getMarketChartLive,
   getMarketMtfSnapshot,
   getMarketNewsCalendar,
   getMarketOverview,
@@ -97,6 +97,8 @@ import {
 import { API_BASE_URL } from './config/api.js'
 import { createMenuActions, groupMenuActions } from './actions/menuActions.js'
 import { safeArray, safeObject, safePrice, safeText } from './utils/safeFormat.js'
+import { mergeChartDelta } from './utils/chartDelta.js'
+import { readChartSnapshot, writeChartSnapshot } from './utils/chartSnapshotCache.js'
 import {
   diamondHistoricalScore,
   diamondMarkerKind,
@@ -129,11 +131,12 @@ const MARKET_ASSETS = {
 }
 const MENU_GROUP_ICONS = {
   Chart: BarChart3,
+  Feed: ShieldCheck,
   Data: Database,
   Analysis: Activity,
   System: SlidersHorizontal,
 }
-const TRADINGVIEW_SYMBOLS = Object.values(MARKET_ASSETS).map(asset => asset.tradingViewSymbol)
+const TRADINGVIEW_SYMBOLS = [...new Set(Object.values(MARKET_ASSETS).map(asset => asset.tradingViewSymbol))]
 const TRADINGVIEW_INTERVALS = { '1M': '1', '5M': '5', '15M': '15', '1H': '60', '4H': '240', '1D': 'D' }
 const CHART_MODES = {
   signal: 'Signal View',
@@ -142,8 +145,8 @@ const CHART_MODES = {
 const NO_HISTORY_MESSAGE = 'No candle data available. Start live builder or import recent history.'
 const GAP_MESSAGE = 'History gap detected. Live price is not aligned with local history.'
 const FULL_ANALYSIS_MESSAGE = 'Full analysis requires recent 1D, 4H, 1H, 15M, and 5M candle history.'
-const APP_VERSION = 'V3.8.0'
-const APP_TITLE = 'SH Market Analyzer V3.8 - Adaptive Diamond Intelligence'
+const APP_VERSION = 'V3.8.1'
+const APP_TITLE = 'SH Market Analyzer V3.8.1 - Adaptive Diamond Intelligence'
 const DEFAULT_LOCKED_MODE = {
   locked_mode: 'NO_DATA_MODE',
   data_mode: 'NO_DATA_MODE',
@@ -376,6 +379,40 @@ function asIndicatorValue(value, fallback = '-') {
   return number.toFixed(3)
 }
 
+function indicatorStateLabel(value) {
+  const labels = {
+    BULLISH_EXPANSION: 'Bull expand',
+    BULLISH_FADE: 'Bull fade',
+    BEARISH_EXPANSION: 'Bear expand',
+    BEARISH_FADE: 'Bear fade',
+    BULLISH_CROSS: 'Bull cross',
+    BEARISH_CROSS: 'Bear cross',
+    ABOVE_SIGNAL: 'Above signal',
+    BELOW_SIGNAL: 'Below signal',
+    CAUTION_DIVERGENCE: 'Divergence',
+  }
+  const normalized = String(value || '').toUpperCase()
+  return labels[normalized] || normalized.replaceAll('_', ' ').toLowerCase().replace(/^./, letter => letter.toUpperCase()) || 'Waiting'
+}
+
+function macdBarColor(item) {
+  const phase = String(item?.phase || item?.color || '').toUpperCase()
+  if (phase.includes('BULLISH_EXPANSION') || phase.includes('BULL-STRONG')) return '#31d158'
+  if (phase.includes('BULLISH_FADE') || phase.includes('BULL-FADE')) return '#168a42'
+  if (phase.includes('BEARISH_EXPANSION') || phase.includes('BEAR-STRONG') || phase === 'RED') return '#ff453a'
+  if (phase.includes('BEARISH_FADE') || phase.includes('BEAR-FADE')) return '#ff9f0a'
+  return Number(item?.value) >= 0 ? '#31d158' : '#ff453a'
+}
+
+function rsiBarColor(item) {
+  const value = Number(item?.raw_value ?? (Number(item?.value) + 50))
+  if (value >= 70) return '#ff9f0a'
+  if (value >= 55) return '#54e346'
+  if (value <= 30) return '#20c8e8'
+  if (value <= 45) return '#2f80ed'
+  return '#7b8797'
+}
+
 function deriveIndicatorSnapshot(panelData) {
   const supplied = safeObject(panelData?.indicator_snapshot)
   if (supplied.status === 'READY') return supplied
@@ -533,6 +570,11 @@ function chartSnapshotSignature(chartData) {
   ].join('|')
 }
 
+function chartSnapshotCandleCount(chartData) {
+  const active = safeArray(chartData?.segments?.active)
+  return active.length || safeArray(chartData?.candles).length
+}
+
 function analysisSnapshotSignature(analysis, automation) {
   const plan = safeObject(analysis?.trade_plan)
   const decision = safeObject(analysis?.decision_quality)
@@ -560,10 +602,10 @@ function liveSyncSignature(value) {
     value?.status,
     value?.provider,
     value?.timeframe,
-    value?.last_candle?.time,
+    value?.last_candle?.timestamp || value?.last_candle?.time,
     value?.last_candle?.close,
-    value?.forming_candle?.time,
-    value?.forming_candle?.close,
+    value?.forming_candle,
+    value?.freshness_state,
     value?.provider_alignment?.status,
     value?.provider_alignment?.matched,
   ].join('|')
@@ -2372,7 +2414,7 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
   ) {
     return (
       <section className="diamond-zone-panel waiting">
-        <header><Diamond size={16} /><span><small>SH Lead Diamond V7</small><strong>Scanning for one Grade B+ zone</strong></span></header>
+        <header><Diamond size={16} /><span><small>SH Lead Diamond V7</small><strong>Scanning for one qualified Scalp zone</strong></span></header>
       </section>
     )
   }
@@ -2414,6 +2456,19 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
   const entryBlocker = primary.entry_blocker_label || keyZones.next_trigger || 'Waiting for closed-candle sequence'
   const confidenceScore = diamondScore
   const confidenceTier = String(primary.diamond_confidence_tier || 'CONTEXT').replaceAll('_', ' ')
+  const sideLabel = direction === 'BULLISH' ? 'BUY' : 'SELL'
+  const reasonLabel = String(primary.origin_model || 'STRUCTURE REACTION').replaceAll('_', ' ')
+  const statusLabel = primary.actionable_entry
+    ? 'Confirmed'
+    : primary.news_guard_suppressed
+      ? 'News guard'
+      : lifecycle === 'FLIPPED'
+        ? 'Expired'
+        : lifecycle === 'FRESH'
+          ? 'Fresh'
+          : lifecycle === 'TESTED'
+            ? 'Tested'
+            : 'Watching'
   const roleClass = primary.actionable_entry
     ? 'good'
     : ['INVALIDATED_CONTEXT', 'STALE_NO_RETEST'].includes(primary.display_role) || primary.entry_stage === 'INVALIDATED' ? 'bad' : 'warn'
@@ -2421,19 +2476,16 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
     <section className={`diamond-zone-panel ${contextTone} ${precision.status === 'READY' ? 'precision' : ''}`} aria-label="SH Diamond Zone strategy context">
       <header>
         <Diamond className="diamond-zone-icon" size={16} />
-        <span><small>SH Lead Diamond V7</small><strong>{displayRole}</strong></span>
-        <b title={`Diamond Grade ${diamondGrade}/${diamondScore}; ${confidenceTier}; origin ${quality}/${effectiveScore}; XAU validation ${precision.quality_grade || '-'}/${precision.validation_score ?? '-'}`}>{diamondGrade} / {diamondScore}</b>
-        <em>{state} / {primary.role} / {lifecycle} / {keyZones.feed_matched ? 'MATCHED' : 'RESEARCH'} / {keyZones.profile_label || keyZones.profile || 'STANDARD'}</em>
+        <span><small>Diamond Detail</small><strong>{sideLabel} Key Zone</strong></span>
+        <b title={`Grade ${diamondGrade || '-'} with ${diamondScore || 0}% confidence`}>Grade {diamondGrade || '-'} / {diamondScore || 0}%</b>
+        <em>{statusLabel} / {keyZones.feed_matched ? 'Matched market data' : 'Data check required'}</em>
       </header>
       <div className="diamond-zone-metrics">
-        <p><span>Diamond Line</span><strong>{asPrice(primary.line)}</strong></p>
-        <p title={safeArray(precisionGate.disqualifiers).join(', ')}><span>Origin Gate</span><strong className={precisionGate.status === 'QUALIFIED' ? 'good' : 'warn'}>{String(precisionGate.status || 'CONTEXT ONLY').replaceAll('_', ' ')} / {String(precisionGate.origin_model || '-').replaceAll('_', ' ')}</strong></p>
-        <p title={`Grade ${diamondGrade}; strength ${strength}/100; origin ${quality}/${effectiveScore}; ${executionQuality.replaceAll('_', ' ')}`}><span>Grade / Score</span><strong className={confidenceTier === 'ENTRY READY' ? 'good' : 'warn'}>{diamondGrade} / {diamondScore} / {Number(diamondScore) >= 60 ? confidenceTier : 'WATCH ONLY'}</strong></p>
-        <p><span>Rejection</span><strong className={['STRONG', 'MODERATE'].includes(rejection) ? 'good' : ['WEAK', 'NO_REJECTION'].includes(rejection) ? 'bad' : ''}>{rejection.replaceAll('_', ' ')} / {rejectionScore}</strong></p>
-        <p title={entryStatus}><span>Signal Role</span><strong className={roleClass}>{displayRole} / {entryStage}</strong></p>
-        <p><span>{mtfLabel}</span><strong>{mtfState} ({mtf.score ?? 0})</strong></p>
-        <p title={`${latestEntry.confirmation_model || 'No closed-candle confirmation'}; ${entryCount} confirmed; active quality floor ${precisionGate.minimum_active_entry_quality ?? precisionGate.minimum_entry_quality ?? '-'}`}><span>Confirmation</span><strong>{entryPathwayLabel} / {latestEntry.quality_score ?? '-'}</strong></p>
-        <p title={entryBlocker}><span>Gate Result</span><strong className={roleClass}>{entryBlocker}</strong></p>
+        <p><span>Side</span><strong className={contextTone === 'buy' ? 'good' : 'warn'}>{sideLabel}</strong></p>
+        <p><span>Zone Price</span><strong>{asPrice(primary.line)}</strong></p>
+        <p title={`Confidence ${diamondScore || 0}%`}><span>Grade</span><strong>{diamondGrade || '-'} / {diamondScore || 0}%</strong></p>
+        <p title={reasonLabel}><span>Reason</span><strong>{reasonLabel}</strong></p>
+        <p title={entryBlocker}><span>Status</span><strong className={roleClass}>{statusLabel}</strong></p>
       </div>
     </section>
   )
@@ -2644,6 +2696,12 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
   const rsiSnapshot = safeObject(indicatorSnapshot.rsi)
   const macdTone = String(macdSnapshot.bias || 'neutral').toLowerCase()
   const rsiTone = String(rsiSnapshot.zone || 'neutral').toLowerCase()
+  const macdDetail = macdSnapshot.divergence && macdSnapshot.divergence !== 'NONE'
+    ? `${macdSnapshot.divergence} divergence`
+    : macdSnapshot.cross || macdSnapshot.phase || macdSnapshot.momentum
+  const rsiDetail = rsiSnapshot.divergence && rsiSnapshot.divergence !== 'NONE'
+    ? `${rsiSnapshot.divergence} divergence`
+    : rsiSnapshot.momentum
   const candleAudit = safeObject(liveSync?.history_provenance?.audit)
   const decisionQuality = safeObject(analysis?.decision_quality)
   const newsEvent = safeObject(newsIntelligence?.primary_event)
@@ -2860,7 +2918,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     flowSeriesRef.current?.setData(safeArray(panelData.market_pressure).map(item => ({
       time: item.time,
       value: Number(item.value) || 0,
-      color: Number(item.value) >= 0 ? '#18a51f' : '#ef2b21',
+      color: macdBarColor(item),
     })))
     pressureSeriesRef.current?.setData(safeArray(panelData.liquidity_pressure).map(item => {
       const rawValue = Number(item.raw_value ?? (Number(item.value) + 50))
@@ -2868,7 +2926,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
       return {
         time: item.time,
         value,
-        color: value >= 50 ? '#65f23a' : '#2e91ff',
+        color: rsiBarColor(item),
       }
     }))
     if (candles.length && !sameDataset) {
@@ -2930,6 +2988,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
           <i />
           <span>{liveSync?.forming_candle ? 'LIVE CANDLE' : liveSync?.ok ? 'FEED LIVE' : liveSync?.status === 'SYNC_PAUSED' ? 'SYNC PAUSED' : 'SYNCING'}</span>
           {liveSync?.synced_at && <time>{new Date(liveSync.synced_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>}
+          {Number.isFinite(Number(liveSync?.provider_latency_ms)) && <em title="Market feed response time">{Math.round(Number(liveSync.provider_latency_ms))}ms</em>}
           {candleAudit.status && <b className={candleAudit.status === 'OHLC_CLEAN' ? 'verified' : 'review'}>{candleAudit.status.replace('_', ' ')}</b>}
         </div>
         <div
@@ -3035,13 +3094,19 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
             </div>
           ))}
         </div>
-        <div className={`signal-pane-label flow ${macdTone}`}>
-          <span><strong>MACD</strong><b>{asIndicatorValue(macdSnapshot.histogram)}</b></span>
-          <em>{macdSnapshot.momentum || 'WAITING'} / 12-26-9</em>
+        <div
+          className={`signal-pane-label flow ${macdTone}`}
+          title={`MACD 12/26/9 / ${indicatorStateLabel(macdSnapshot.phase)} / ${indicatorStateLabel(macdDetail)} / Strength ${macdSnapshot.strength ?? 0}%`}
+        >
+          <span><strong>MACD</strong><b>{asIndicatorValue(macdSnapshot.histogram)}</b><small>{indicatorStateLabel(macdSnapshot.phase)}</small></span>
+          <em>{indicatorStateLabel(macdDetail)}</em>
         </div>
-        <div className={`signal-pane-label pressure ${rsiTone}`}>
-          <span><strong>RSI 14</strong><b>{asIndicatorValue(rsiSnapshot.value)}</b></span>
-          <em>{rsiSnapshot.zone || 'WAITING'} / 70-50-30</em>
+        <div
+          className={`signal-pane-label pressure ${rsiTone}`}
+          title={`RSI 14 / ${indicatorStateLabel(rsiSnapshot.zone)} / ${indicatorStateLabel(rsiDetail)} / Average ${asIndicatorValue(rsiSnapshot.average)}`}
+        >
+          <span><strong>RSI 14</strong><b>{asIndicatorValue(rsiSnapshot.value)}</b><small>{indicatorStateLabel(rsiSnapshot.zone)}</small></span>
+          <em>{indicatorStateLabel(rsiDetail)}</em>
         </div>
         <div className="signal-level-labels">
           {levelPositions.filter(level => !level.hideLeftLabel).map(level => (
@@ -3943,19 +4008,23 @@ function SHAnalysisChart({
 function HistogramPanel({ title, subtitle = 'positive / negative', data = [], mode = 'pressure', snapshot = {} }) {
   const items = safeArray(data)
   const values = items.map(item => Number(item?.value)).filter(Number.isFinite)
-  const maxAbs = Math.max(...values.map(Math.abs), 1)
+  const maxAbs = mode === 'rsi' ? 50 : Math.max(...values.map(Math.abs), 1)
   const top = maxAbs
   const bottom = -maxAbs
   const snapshotValue = mode === 'rsi' ? snapshot.value : snapshot.histogram
   const snapshotState = mode === 'rsi' ? snapshot.zone : snapshot.bias
   const snapshotMomentum = snapshot.momentum || 'WAITING'
+  const snapshotDetail = snapshot.divergence && snapshot.divergence !== 'NONE'
+    ? `${snapshot.divergence} divergence`
+    : mode === 'rsi' ? snapshotMomentum : snapshot.cross || snapshot.phase || snapshotMomentum
   const stateClass = String(snapshotState || 'neutral').toLowerCase()
   return (
     <section className={`indicator-panel ${stateClass}`}>
       <div className="indicator-title">
         <div><strong>{title}</strong><b>{asIndicatorValue(snapshotValue)}</b></div>
         <span>{subtitle}</span>
-        <em>{String(snapshotState || 'WAITING').replaceAll('_', ' ')} / {snapshotMomentum}</em>
+        <em>{indicatorStateLabel(snapshotState)} / {indicatorStateLabel(snapshotMomentum)}</em>
+        <small>{indicatorStateLabel(snapshotDetail)}</small>
       </div>
       <div className="histogram-body">
         <div className="histogram-bars">
@@ -3965,9 +4034,7 @@ function HistogramPanel({ title, subtitle = 'positive / negative', data = [], mo
             const value = Number(item?.value) || 0
             const height = Math.max(8, Math.min(50, Math.abs(value) / maxAbs * 48))
             const positive = value >= 0
-            const color = mode === 'rsi'
-              ? positive ? '#22c55e' : '#2f80ed'
-              : item.color === 'red' ? '#ff5630' : '#22c55e'
+            const color = mode === 'rsi' ? rsiBarColor(item) : macdBarColor(item)
             return (
               <i
                 key={`${item?.time || 'bar'}-${idx}`}
@@ -4032,7 +4099,7 @@ function IndicatorPanel({ panels, dataIntegrity }) {
       <section className={`indicator-confluence ${String(indicatorSnapshot.confluence || 'waiting').toLowerCase()}`}>
         <Activity size={14} />
         <div><span>Indicator Confluence</span><strong>{String(indicatorSnapshot.confluence || 'WAITING').replaceAll('_', ' ')}</strong></div>
-        <small>Closed provider candles</small>
+        <small>{indicatorSnapshot.quality_grade || '-'} / {clampPercent(indicatorSnapshot.quality_score)}%</small>
       </section>
       <section className="market-pressure-panel">
         <div><span>Bullish</span><strong>{asPrice(pressure.bullish, '0')}%</strong></div>
@@ -4549,10 +4616,22 @@ function MobileMenuDrawer({
 }) {
   const { user } = useAuth()
   const isAdmin = user?.app_metadata?.role === 'admin'
+  const canManageFeed = isAdmin || import.meta.env.DEV
   const [settingsGroup, setSettingsGroup] = useState('Analysis')
   const oandaCredentialState = status?.settings?.oanda_credential_state || (status?.settings?.oanda_api_token ? 'SAVED' : 'NOT_CONFIGURED')
   const oandaCredentialSaved = Boolean(status?.settings?.oanda_api_token)
   const oandaRestore = status?.oanda_restore || null
+  const activeCredentialSaved = oandaCredentialSaved
+  const activeRestore = oandaRestore
+  const activeToken = oandaToken
+  const setActiveToken = setOandaToken
+  const activeEnvironment = oandaEnvironment
+  const setActiveEnvironment = setOandaEnvironment
+  const environmentOptions = ['practice', 'live']
+  const activeVerification = oandaVerification
+  const saveActiveProvider = onSaveOanda
+  const activeVisualSymbol = 'OANDA:XAUUSD'
+  const selectedFeedMatched = providerAlignment?.matched === true && providerAlignment?.visual_symbol === activeVisualSymbol
   const menuActions = createMenuActions({
     'chart.tradingview': () => onChartMode('tradingview'),
     'chart.resetScale': onResetScale,
@@ -4572,12 +4651,15 @@ function MobileMenuDrawer({
     backendOffline,
     chartMode,
   })
-  const menuGroups = groupMenuActions(menuActions)
+  const baseMenuGroups = groupMenuActions(menuActions)
     .filter(section => isAdmin || !['Data', 'System'].includes(section.group))
     .map(section => asset === 'BTCUSD'
       ? { ...section, actions: section.actions.filter(action => ['chart.tradingview', 'system.backendHealth', 'system.clearLocalStorage'].includes(action.id)) }
       : section)
     .filter(section => section.actions.length)
+  const menuGroups = asset === 'XAUUSD' && canManageFeed
+    ? [...baseMenuGroups, { group: 'Feed', actions: [] }]
+    : baseMenuGroups
   const activeMenuGroup = menuGroups.find(section => section.group === settingsGroup)
     || menuGroups.find(section => section.group === 'Analysis')
     || menuGroups[0]
@@ -4615,7 +4697,7 @@ function MobileMenuDrawer({
             )
           })}
         </nav>
-        {activeMenuGroup && (
+        {activeMenuGroup?.actions?.length > 0 && (
           <section className="drawer-section settings-command-section">
             <h3><ActiveGroupIcon size={15} /> {activeMenuGroup.group}</h3>
             <div className="settings-command-list">
@@ -4653,26 +4735,26 @@ function MobileMenuDrawer({
             </div>
           </section>
         )}
-        {isAdmin && activeMenuGroup?.group === 'Data' && (
+        {canManageFeed && activeMenuGroup?.group === 'Feed' && (
           <section className="drawer-section provider-config-section">
             <h3><ShieldCheck size={15} /> Matched Market Feed</h3>
             {asset === 'XAUUSD' ? (
               <div className="provider-config-form">
                 <div className="provider-config-status">
                   <span>TradingView</span>
-                  <strong>OANDA:XAUUSD</strong>
-                  <b className={providerAlignment?.matched ? 'good' : 'warn'}>{providerAlignment?.status || 'FALLBACK'}</b>
+                  <strong>{activeVisualSymbol}</strong>
+                  <b className={selectedFeedMatched ? 'good' : 'warn'}>{selectedFeedMatched ? 'MATCHED' : 'VERIFY'}</b>
                 </div>
-                <div className={`provider-credential-state ${oandaCredentialSaved ? 'saved' : 'missing'}`}>
+                <div className={`provider-credential-state ${activeCredentialSaved ? 'saved' : 'missing'}`}>
                   <ShieldCheck size={15} />
                   <span>
-                    <strong>{oandaRestore?.running ? 'RESTORING CONNECTION' : oandaCredentialSaved ? 'CONNECTION SAVED' : 'CONNECTION NEEDED'}</strong>
+                    <strong>{activeRestore?.running ? 'RESTORING CONNECTION' : activeCredentialSaved ? 'CONNECTION SAVED' : 'CONNECTION NEEDED'}</strong>
                     <small>
-                      {oandaRestore?.running
+                      {activeRestore?.running
                         ? 'Synchronizing matched OANDA candle history.'
-                        : oandaCredentialSaved
-                          ? `Saved securely / ${status?.settings?.oanda_environment || 'practice'}`
-                          : 'Add an OANDA personal access token once.'}
+                        : activeCredentialSaved
+                          ? `Saved securely / ${activeEnvironment}`
+                          : 'Add an OANDA access token once.'}
                     </small>
                   </span>
                 </div>
@@ -4680,19 +4762,19 @@ function MobileMenuDrawer({
                   <span>OANDA connection key</span>
                   <input
                     type="password"
-                    value={oandaToken}
-                    onChange={event => setOandaToken(event.target.value)}
-                    placeholder={oandaCredentialSaved ? 'Saved securely - enter only to replace' : 'Personal access token'}
+                    value={activeToken}
+                    onChange={event => setActiveToken(event.target.value)}
+                    placeholder={activeCredentialSaved ? 'Saved securely - enter only to replace' : 'Access token'}
                     autoComplete="new-password"
                   />
                 </label>
                 <div className="provider-environment" aria-label="OANDA environment">
-                  {['practice', 'live'].map(environment => (
+                  {environmentOptions.map(environment => (
                     <button
                       type="button"
-                      className={oandaEnvironment === environment ? 'active' : ''}
+                      className={activeEnvironment === environment ? 'active' : ''}
                       key={environment}
-                      onClick={() => setOandaEnvironment(environment)}
+                      onClick={() => setActiveEnvironment(environment)}
                     >
                       {environment}
                     </button>
@@ -4700,21 +4782,21 @@ function MobileMenuDrawer({
                 </div>
                 <button
                   className="provider-save-button"
-                  onClick={onSaveOanda}
-                  disabled={(!oandaToken.trim() && !status?.settings?.oanda_api_token) || actionsDisabled || oandaVerification?.status === 'VERIFYING'}
+                  onClick={saveActiveProvider}
+                  disabled={(!activeToken.trim() && !activeCredentialSaved) || actionsDisabled || activeVerification?.status === 'VERIFYING'}
                 >
-                  {oandaVerification?.status === 'VERIFYING'
+                  {activeVerification?.status === 'VERIFYING'
                     ? 'Verifying and syncing...'
-                    : oandaCredentialSaved && !oandaToken.trim()
+                    : activeCredentialSaved && !activeToken.trim()
                       ? 'Re-check Saved OANDA'
                       : 'Verify & Save OANDA'}
                 </button>
-                {oandaVerification && oandaVerification.status !== 'VERIFYING' && (
-                  <div className={`provider-verification ${oandaVerification.ok ? 'good' : 'bad'}`}>
-                    <strong>{oandaVerification.status || 'NOT VERIFIED'}</strong>
-                    <span>{oandaVerification.message || 'Provider verification failed.'}</span>
-                    {oandaVerification.ok && (
-                      <small>{oandaVerification.environment} / {oandaVerification.latency_ms}ms / {oandaVerification.latest_candle_time || '-'}</small>
+                {activeVerification && activeVerification.status !== 'VERIFYING' && (
+                  <div className={`provider-verification ${activeVerification.ok ? 'good' : 'bad'}`}>
+                    <strong>{activeVerification.status || 'NOT VERIFIED'}</strong>
+                    <span>{activeVerification.message || 'Provider verification failed.'}</span>
+                    {activeVerification.ok && (
+                      <small>{activeVerification.environment} / {activeVerification.latency_ms}ms / {activeVerification.latest_candle_time || '-'}</small>
                     )}
                   </div>
                 )}
@@ -4741,7 +4823,7 @@ function MobileMenuDrawer({
           <p><span>Feed Match</span><strong className={providerAlignment?.matched ? 'good' : 'warn'}>{providerAlignment?.status || 'PENDING'}</strong></p>
           <p><span>Market Data</span><strong>{providerAlignment?.matched ? 'Ready' : 'Waiting'}</strong></p>
         </div>
-        {asset === 'XAUUSD' && activeMenuGroup?.group === 'Data' && (
+        {asset === 'XAUUSD' && activeMenuGroup?.group === 'Feed' && (
           <div className="drawer-counts">
             {['1M', '5M', '15M', '1H', '4H', '1D'].map(tf => (
               <span key={tf}>{tf} <strong>{counts?.[tf] || 0}</strong></span>
@@ -4778,27 +4860,54 @@ function SplitChartView({ liveProps, analysisProps, sourceBadge }) {
 
 export default function App() {
   const { user } = useAuth()
+  const initialViewRef = useRef(null)
+  if (initialViewRef.current === null) {
+    const initialAsset = getSavedAsset()
+    const initialTimeframe = getSavedTimeframe()
+    let cachedSnapshot = null
+    try {
+      cachedSnapshot = readChartSnapshot(localStorage, initialAsset, initialTimeframe)
+    } catch (_) {
+      // The local database snapshot will hydrate the chart when storage is blocked.
+    }
+    initialViewRef.current = { asset: initialAsset, timeframe: initialTimeframe, snapshot: cachedSnapshot }
+  }
+  const initialView = initialViewRef.current
+  const initialChartCandles = safeArray(initialView.snapshot?.chart_data?.segments?.active).length
+    ? safeArray(initialView.snapshot?.chart_data?.segments?.active)
+    : safeArray(initialView.snapshot?.chart_data?.candles)
+  const initialLatestPrice = initialView.snapshot?.chart_data?.latest_live_price
+    ?? initialChartCandles.at(-1)?.close
   const isAdmin = user?.app_metadata?.role === 'admin'
-  const [status, setStatus] = useState(null)
+  const [status, setStatus] = useState(() => initialView.snapshot ? ({
+    status: 'RESTORED_SNAPSHOT',
+    latest_price: initialLatestPrice,
+    provider_name: initialView.snapshot.history_provenance?.source || '-',
+  }) : null)
   const [health, setHealth] = useState(null)
   const [backendStatus, setBackendStatus] = useState(null)
   const [analysisState, setAnalysisState] = useState(null)
   const [apiErrorInfo, setApiErrorInfo] = useState(null)
   const [engineStatus, setEngineStatus] = useState(null)
   const [dataReadiness, setDataReadiness] = useState(null)
-  const [dataIntegrity, setDataIntegrity] = useState(null)
+  const [dataIntegrity, setDataIntegrity] = useState(() => initialView.snapshot?.chart_data?.data_integrity || null)
   const [dataMode, setDataMode] = useState(null)
   const [dataHub, setDataHub] = useState(null)
   const [dataState, setDataState] = useState(null)
   const [gapDiagnosis, setGapDiagnosis] = useState(null)
-  const [overlays, setOverlays] = useState(null)
-  const [overlayStatus, setOverlayStatus] = useState(null)
-  const [panels, setPanels] = useState(null)
+  const [overlays, setOverlays] = useState(() => initialView.snapshot?.overlays || null)
+  const [overlayStatus, setOverlayStatus] = useState(() => initialView.snapshot?.overlays?.overlay_status || null)
+  const [panels, setPanels] = useState(() => initialView.snapshot?.panels || null)
   const [analysis, setAnalysis] = useState(null)
   const [analysisExplanation, setAnalysisExplanation] = useState(null)
   const [marketOverview, setMarketOverview] = useState(null)
-  const [chartData, setChartData] = useState(null)
-  const [liveChartState, setLiveChartState] = useState(null)
+  const [chartData, setChartData] = useState(() => initialView.snapshot?.chart_data || null)
+  const [liveChartState, setLiveChartState] = useState(() => initialView.snapshot ? ({
+    ok: true,
+    status: 'RESTORED_SNAPSHOT',
+    provider_alignment: initialView.snapshot.provider_alignment || null,
+    history_provenance: initialView.snapshot.history_provenance || null,
+  }) : null)
   const [mtfSnapshot, setMtfSnapshot] = useState(null)
   const [diamondHistory, setDiamondHistory] = useState(null)
   const [diamondValidation, setDiamondValidation] = useState(null)
@@ -4815,11 +4924,11 @@ export default function App() {
   const [newsCalendarError, setNewsCalendarError] = useState('')
   const [autoAnalysisStatus, setAutoAnalysisStatus] = useState(null)
   const [overlayVisibility, setOverlayVisibility] = useState({})
-  const [timeframe, setTimeframe] = useState(getSavedTimeframe)
+  const [timeframe, setTimeframe] = useState(initialView.timeframe)
   const [timeframeTransition, setTimeframeTransition] = useState({ active: false, target: null, phase: 'idle' })
   const [tradingStyle, setTradingStyle] = useState(getSavedTradingStyle)
   const [chartMode, setChartMode] = useState(getSavedChartMode)
-  const [asset, setAsset] = useState(getSavedAsset)
+  const [asset, setAsset] = useState(initialView.asset)
   const [tvSymbol, setTvSymbol] = useState(getSavedTradingViewSymbol)
   const [mobileTab, setMobileTab] = useState('live')
   const [isMobileLayout, setIsMobileLayout] = useState(false)
@@ -4848,8 +4957,11 @@ export default function App() {
   const liveAnalysisSignatureRef = useRef('')
   const oandaSettingsHydratedRef = useRef(false)
   const timeframeSwitchIdRef = useRef(0)
-  const chartViewCacheRef = useRef(new Map())
+  const chartViewCacheRef = useRef(new Map(initialView.snapshot
+    ? [[`${initialView.asset}:${initialView.timeframe}`, initialView.snapshot]]
+    : []))
   const chartViewPrefetchRef = useRef(new Map())
+  const chartBootstrapPendingRef = useRef(!initialView.snapshot)
   const viewSelectionRef = useRef({ asset, timeframe, tradingStyle })
   useMarketNotifications(marketAlerts)
 
@@ -4977,6 +5089,14 @@ export default function App() {
 
   function applyChartViewSnapshot(result, nextAsset, nextTimeframe, includeAnalysis = false) {
     if (!result?.chart_data) return false
+    const key = `${nextAsset}:${nextTimeframe}`
+    const cachedChart = chartViewCacheRef.current.get(key)?.chart_data
+    const incomingCount = chartSnapshotCandleCount(result.chart_data)
+    const cachedCount = chartSnapshotCandleCount(cachedChart)
+    if (incomingCount < 30 && cachedCount >= 30) {
+      chartBootstrapPendingRef.current = false
+      return false
+    }
     liveCandleSignatureRef.current = chartSnapshotSignature(result.chart_data)
     setChartData(result.chart_data)
     setDataIntegrity(result.chart_data.data_integrity || null)
@@ -5002,7 +5122,7 @@ export default function App() {
         if (result.analysis.strategy_governance) setStrategyGovernance(result.analysis.strategy_governance)
       }
     }
-    chartViewCacheRef.current.set(`${nextAsset}:${nextTimeframe}`, {
+    chartViewCacheRef.current.set(key, {
       chart_data: result.chart_data,
       overlays: result.overlays,
       panels: result.panels,
@@ -5010,13 +5130,19 @@ export default function App() {
       history_provenance: result.history_provenance,
       status: result.status,
     })
+    chartBootstrapPendingRef.current = false
+    try {
+      writeChartSnapshot(localStorage, result, nextAsset, nextTimeframe)
+    } catch (_) {
+      // An in-memory snapshot still keeps this session responsive.
+    }
     return true
   }
 
-  function loadCachedChartSnapshot(nextAsset, nextTimeframe) {
+  function loadCachedChartSnapshot(nextAsset, nextTimeframe, forceNetwork = false) {
     const key = `${nextAsset}:${nextTimeframe}`
     const cached = chartViewCacheRef.current.get(key)
-    if (cached) return Promise.resolve(cached)
+    if (cached && !forceNetwork) return Promise.resolve(cached)
     const pending = chartViewPrefetchRef.current.get(key)
     if (pending) return pending
     const request = getMarketChartSnapshot(nextAsset, nextTimeframe, 500)
@@ -5111,14 +5237,15 @@ export default function App() {
         ...safeObject(provider),
         settings: safeObject(credentialSettings),
         oanda_restore: providerCredentials?.oanda_restore || provider?.oanda_restore || null,
+        provider_restore: providerCredentials?.provider_restore || provider?.provider_restore || null,
         data_readiness: provider?.data_readiness,
       }
       setBackendStatus(backendStatusResult)
       setAnalysisState({ analysis_state: readiness?.analysis_state || stateResult?.analysis_state || 'Waiting for Data' })
       setStatus(hydratedProvider)
       const savedOandaEnvironment = hydratedProvider?.settings?.oanda_environment
-      if (!oandaSettingsHydratedRef.current && ['practice', 'live'].includes(savedOandaEnvironment)) {
-        setOandaEnvironment(savedOandaEnvironment)
+      if (!oandaSettingsHydratedRef.current) {
+        if (['practice', 'live'].includes(savedOandaEnvironment)) setOandaEnvironment(savedOandaEnvironment)
         oandaSettingsHydratedRef.current = true
       }
       setEngineStatus(engine)
@@ -5135,11 +5262,23 @@ export default function App() {
       } else {
         setGapDiagnosis(null)
       }
-      setDataIntegrity(chartResult?.data_integrity || integrityResult)
-      setChartData(chartResult || { candles: [], segments: {} })
-      setOverlays(overlayResult || { overlays: {} })
-      setOverlayStatus(chartResult?.overlay_status || overlayResult?.overlay_status || null)
-      setPanels(panelResult)
+      const incomingChartCount = chartSnapshotCandleCount(chartResult)
+      setChartData(current => (
+        incomingChartCount >= 30 || chartSnapshotCandleCount(current) < 30
+          ? chartResult
+          : current
+      ))
+      if (incomingChartCount >= 30) {
+        setDataIntegrity(chartResult?.data_integrity || integrityResult)
+        setOverlays(overlayResult || { overlays: {} })
+        setOverlayStatus(chartResult?.overlay_status || overlayResult?.overlay_status || null)
+        setPanels(panelResult)
+      } else {
+        setDataIntegrity(current => current || chartResult?.data_integrity || integrityResult)
+        setOverlays(current => current || overlayResult || { overlays: {} })
+        setOverlayStatus(current => current || chartResult?.overlay_status || overlayResult?.overlay_status || null)
+        setPanels(current => current || panelResult)
+      }
       setAnalysisExplanation(explanationResult)
       setMarketOverview(overviewResult)
       setMtfSnapshot(mtfResult)
@@ -5358,6 +5497,7 @@ export default function App() {
     try {
       const verification = await verifyOandaFeed(payload)
       setOandaVerification(verification)
+      if (asset === 'XAUUSD') setTvSymbol('OANDA:XAUUSD')
       setMessage(verification.message || 'OANDA feed verified, saved, and synchronized.')
       setOandaToken('')
       await refresh(timeframe)
@@ -5565,6 +5705,20 @@ export default function App() {
     setAnalysisDrawerOpen(false)
     setMobileTab('live')
     setMessage(`${normalized} selected.`)
+    chartBootstrapPendingRef.current = true
+    loadCachedChartSnapshot(normalized, timeframe, true)
+      .then(result => {
+        const current = viewSelectionRef.current
+        if (current.asset === normalized && current.timeframe === timeframe) {
+          applyChartViewSnapshot(result, normalized, timeframe, false)
+        }
+      })
+      .catch(() => {
+        const current = viewSelectionRef.current
+        if (current.asset === normalized && current.timeframe === timeframe) {
+          chartBootstrapPendingRef.current = false
+        }
+      })
     await refresh(timeframe, showStaleHistory, normalized, tradingStyle)
   }
 
@@ -5589,6 +5743,7 @@ export default function App() {
     setSessionFramework(null)
     setKeyZones(null)
     setNewsIntelligence(null)
+    chartBootstrapPendingRef.current = true
 
     const isCurrentSwitch = () => timeframeSwitchIdRef.current === switchId
     const cached = chartViewCacheRef.current.get(`${asset}:${normalized}`)
@@ -5621,6 +5776,7 @@ export default function App() {
       })
     } catch (err) {
       if (!isCurrentSwitch()) return
+      chartBootstrapPendingRef.current = false
       setLiveChartState(state => ({
         ...safeObject(state),
         status: cached ? 'CACHE_READY' : 'SYNC_PAUSED',
@@ -5668,6 +5824,12 @@ export default function App() {
   }
 
   useEffect(() => {
+    const visualSymbol = activeProviderAlignment?.visual_symbol
+    if (asset !== 'XAUUSD' || !TRADINGVIEW_SYMBOLS.includes(visualSymbol)) return
+    setTvSymbol(visualSymbol)
+  }, [asset, activeProviderAlignment?.visual_symbol])
+
+  useEffect(() => {
     clearBrokenLocalStorage()
     if (import.meta.env.DEV) {
       console.group('SH Market Analyzer Boot')
@@ -5678,8 +5840,19 @@ export default function App() {
     const slowTimer = setTimeout(() => {
       setBoot(state => state.phase === 'STARTING' ? { ...state, slow: true } : state)
     }, 5000)
+    let cancelled = false
+    loadCachedChartSnapshot(asset, timeframe, true)
+      .then(result => {
+        if (!cancelled) applyChartViewSnapshot(result, asset, timeframe, false)
+      })
+      .catch(() => {
+        chartBootstrapPendingRef.current = false
+      })
     refresh(timeframe)
-    return () => clearTimeout(slowTimer)
+    return () => {
+      cancelled = true
+      clearTimeout(slowTimer)
+    }
   }, [])
 
   useEffect(() => {
@@ -5757,45 +5930,37 @@ export default function App() {
     if (backendOffline) return undefined
     let cancelled = false
     let timer = null
-    let scanningTimer = null
 
     const basePollDelay = () => {
-      if (asset === 'BTCUSD') return isMobileLayout ? 9000 : 5000
-      return isMobileLayout ? 45000 : 30000
+      const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection
+      if (connection?.saveData) return 15000
+      if (asset === 'BTCUSD') return isMobileLayout ? 6000 : 4000
+      return isMobileLayout ? 5000 : 3000
     }
 
     const schedule = delay => {
       if (!cancelled) timer = window.setTimeout(pollLiveCandle, delay)
     }
     const pollLiveCandle = async () => {
+      const pollStartedAt = performance.now()
       if (document.hidden) {
-        schedule(15000)
+        schedule(30000)
         return
       }
       if (chartLivePollRef.current) {
-        schedule(1000)
+        schedule(800)
+        return
+      }
+      if (chartBootstrapPendingRef.current) {
+        schedule(400)
         return
       }
       chartLivePollRef.current = true
-      scanningTimer = window.setTimeout(() => {
-        if (!cancelled) {
-          setAutoAnalysisStatus(state => (
-            state?.status === 'SCANNING'
-              ? state
-              : { ...safeObject(state), status: 'SCANNING' }
-          ))
-        }
-      }, 700)
       let nextDelay = basePollDelay()
       try {
-        const result = await getMarketChartLive(
-          asset,
-          timeframe,
-          isMobileLayout ? 320 : 500,
-          tradingStyle,
-        )
-        if (!cancelled && result?.chart_data) {
-          const nextChartSignature = chartSnapshotSignature(result.chart_data)
+        const result = await getMarketCandleTick(asset, timeframe, tradingStyle)
+        if (!cancelled && result?.chart_delta) {
+          const nextChartSignature = chartSnapshotSignature(result.chart_delta)
           const chartChanged = nextChartSignature !== liveCandleSignatureRef.current
           const nextAnalysisSignature = result.analysis?.symbol
             ? analysisSnapshotSignature(result.analysis, result.auto_analysis)
@@ -5808,12 +5973,17 @@ export default function App() {
 
           startTransition(() => {
             if (chartChanged) {
-              setChartData(result.chart_data)
-              setDataIntegrity(result.chart_data.data_integrity || null)
-              if (result.panels) setPanels(result.panels)
+              setChartData(current => mergeChartDelta(current, result.chart_delta))
+              if (result.chart_delta.data_integrity) {
+                setDataIntegrity(current => ({
+                  ...safeObject(current),
+                  ...safeObject(result.chart_delta.data_integrity),
+                }))
+              }
             }
 
             if (analysisChanged) {
+              if (result.panels) setPanels(result.panels)
               if (result.session_framework) setSessionFramework(result.session_framework)
               if (result.key_zones) setKeyZones(result.key_zones)
               if (result.news_intelligence) setNewsIntelligence(result.news_intelligence)
@@ -5879,12 +6049,9 @@ export default function App() {
           }))
         }
       } finally {
-        if (scanningTimer) {
-          window.clearTimeout(scanningTimer)
-          scanningTimer = null
-        }
         chartLivePollRef.current = false
-        schedule(nextDelay)
+        const elapsed = performance.now() - pollStartedAt
+        schedule(Math.max(250, nextDelay - elapsed))
       }
     }
 
@@ -5900,7 +6067,6 @@ export default function App() {
     return () => {
       cancelled = true
       if (timer) window.clearTimeout(timer)
-      if (scanningTimer) window.clearTimeout(scanningTimer)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [asset, backendOffline, timeframe, tradingStyle, isMobileLayout])

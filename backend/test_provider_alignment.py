@@ -99,7 +99,7 @@ class ProviderAlignmentTests(unittest.TestCase):
         }
         service = OandaHistoryService(self.settings, self.store)
         with patch.object(service, "_endpoint_resolution_error", return_value=None), \
-                patch("engine.xauusd_provider.requests.get", return_value=FakeResponse(payload)):
+                patch.object(service._session, "get", return_value=FakeResponse(payload)):
             result = service.sync_recent_history(["5M"])
 
         self.assertTrue(result["ok"])
@@ -131,13 +131,31 @@ class ProviderAlignmentTests(unittest.TestCase):
         }
         service = OandaHistoryService(self.settings, self.store)
         with patch.object(service, "_endpoint_resolution_error", return_value=None), \
-                patch("engine.xauusd_provider.requests.get", return_value=FakeResponse(payload)):
+                patch.object(service._session, "get", return_value=FakeResponse(payload)):
             result = service.verify_connection("private-test-token", "practice")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "VERIFIED")
         self.assertEqual(result["instrument"], "XAU_USD")
         self.assertNotIn("private-test-token", str(result))
+
+    def test_oanda_live_sync_reuses_a_recent_provider_result(self) -> None:
+        self.settings.update({"oanda_api_token": "test-token", "oanda_environment": "practice"})
+        payload = {
+            "candles": [
+                {"complete": False, "time": "2026-01-01T00:05:00Z", "mid": {"o": "100", "h": "111", "l": "99", "c": "110"}},
+            ]
+        }
+        service = OandaHistoryService(self.settings, self.store)
+        with patch.object(service, "_endpoint_resolution_error", return_value=None), \
+                patch.object(service._session, "get", return_value=FakeResponse(payload)) as request:
+            first = service.sync_live_candle("5M")
+            second = service.sync_live_candle("5M")
+
+        self.assertTrue(first["ok"])
+        self.assertFalse(first["cache_hit"])
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(request.call_count, 1)
 
     def test_oanda_verification_recovers_from_loopback_dns_without_echoing_token(self) -> None:
         service = OandaHistoryService(self.settings, self.store)
@@ -154,7 +172,7 @@ class ProviderAlignmentTests(unittest.TestCase):
 
         with patch("engine.xauusd_provider.socket.getaddrinfo", return_value=loopback), \
                 patch.object(service, "_request_via_public_dns", side_effect=recover) as recovery, \
-                patch("engine.xauusd_provider.requests.get") as request:
+                patch.object(service._session, "get") as request:
             result = service.verify_connection("private-test-token", "practice")
 
         self.assertTrue(result["ok"])
@@ -246,11 +264,57 @@ class ProviderAlignmentTests(unittest.TestCase):
         self.assertEqual(indicator_snapshot["status"], "READY")
         self.assertEqual(indicator_snapshot["source"], "CLOSED_PROVIDER_CANDLES")
         self.assertEqual(indicator_snapshot["macd"]["bias"], "BULLISH")
+        self.assertIn(indicator_snapshot["macd"]["phase"], {"BULLISH_EXPANSION", "BULLISH_FADE"})
+        self.assertIn(indicator_snapshot["macd"]["cross"], {"BULLISH_CROSS", "ABOVE_SIGNAL"})
         self.assertGreater(indicator_snapshot["rsi"]["value"], 50)
         self.assertEqual(indicator_snapshot["confluence"], "ALIGNED_BULLISH")
+        self.assertEqual(indicator_snapshot["decision_use"], "CONFIRMATION_ONLY")
+        self.assertGreaterEqual(indicator_snapshot["quality_score"], 60)
+        self.assertLessEqual(indicator_snapshot["quality_score"], 100)
         self.assertEqual(snapshot["status"], "READY")
         self.assertEqual(snapshot["source"], BINANCE_HISTORY_SOURCE)
         self.assertIn(snapshot["trend"], {"BULLISH", "BEARISH", "RANGE"})
+
+    def test_indicator_engine_excludes_the_forming_provider_candle(self) -> None:
+        base = pd.Timestamp("2026-02-01T00:00:00Z")
+        candles = []
+        for index in range(60):
+            price = 200 + index * 0.25
+            candles.append({
+                "timestamp": (base + pd.Timedelta(minutes=index * 5)).isoformat(),
+                "open": price,
+                "high": price + 0.8,
+                "low": price - 0.6,
+                "close": price + 0.3,
+            })
+        self.store.insert_candles("5M", candles, OANDA_HISTORY_SOURCE)
+        forming_time = (base + pd.Timedelta(minutes=60 * 5)).isoformat()
+        self.store.upsert_candle(
+            "5M",
+            forming_time,
+            215,
+            216,
+            150,
+            151,
+            source=OANDA_HISTORY_SOURCE,
+            is_complete=False,
+            is_partial=True,
+        )
+        self.store.save_status(GoldAPIStatus(
+            status="LIVE",
+            provider_name="OANDA v20 XAU_USD Mid OHLC",
+            latest_price=151,
+            last_updated=forming_time,
+            is_running=True,
+        ))
+
+        panels = DataIntegrityEngine(self.store).indicator_panels("5M", 100)
+        indicator_snapshot = panels["indicator_panels"]["indicator_snapshot"]
+        expected_latest = int((base + pd.Timedelta(minutes=59 * 5)).timestamp())
+
+        self.assertEqual(indicator_snapshot["status"], "READY")
+        self.assertEqual(indicator_snapshot["latest_time"], expected_latest)
+        self.assertEqual(indicator_snapshot["macd"]["bias"], "BULLISH")
 
     def test_valid_high_volatility_provider_candle_is_flagged_but_retained(self) -> None:
         candles = [
