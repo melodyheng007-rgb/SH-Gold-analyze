@@ -90,7 +90,13 @@ MARKET_VISUAL_SYMBOLS = {
 }
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLED_DATA_DIR = os.path.join(BASE_DIR, "data")
-DATA_DIR = os.path.abspath(os.getenv("SH_DATA_DIR") or BUNDLED_DATA_DIR)
+CONFIGURED_DATA_DIR = str(
+    os.getenv("SH_DATA_DIR")
+    or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    or ""
+).strip()
+DATA_DIR = os.path.abspath(CONFIGURED_DATA_DIR or BUNDLED_DATA_DIR)
+PERSISTENT_STORAGE_ENABLED = bool(CONFIGURED_DATA_DIR)
 SAMPLE_CSV = os.path.join(BUNDLED_DATA_DIR, "sample_xauusd_m5.csv")
 HISTORY_DIR = os.path.join(BUNDLED_DATA_DIR, "xauusd_history")
 RECENT_HISTORY_DIR = os.path.join(DATA_DIR, "xauusd_recent_history")
@@ -422,6 +428,10 @@ def api_health():
         "supported_assets": list(MARKET_VISUAL_SYMBOLS),
         "provider_status": provider_status.get("status"),
         "backend_status": "ONLINE",
+        "storage": {
+            "mode": "PERSISTENT" if PERSISTENT_STORAGE_ENABLED else "LOCAL",
+            "diamond_history_persistent": PERSISTENT_STORAGE_ENABLED,
+        },
         "authentication": auth_guard.status(),
         "market_feed": {
             "active_provider": "OANDA",
