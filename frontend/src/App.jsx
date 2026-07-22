@@ -99,9 +99,11 @@ import {
 } from './api.js'
 import { API_BASE_URL } from './config/api.js'
 import { createMenuActions, groupMenuActions } from './actions/menuActions.js'
+import WorkspaceErrorBoundary from './components/WorkspaceErrorBoundary.jsx'
 import { safeArray, safeObject, safePrice, safeText } from './utils/safeFormat.js'
 import { mergeChartDelta } from './utils/chartDelta.js'
 import { isIndicatorSnapshotReady, readChartSnapshot, writeChartSnapshot } from './utils/chartSnapshotCache.js'
+import { normalizeChartCandles, normalizeChartSeries } from './utils/chartSeries.js'
 import {
   diamondHistoricalScore,
   diamondMarkerKind,
@@ -1255,13 +1257,7 @@ function signalViewCandles(chartData, expectedSymbol) {
   if (chartData?.symbol && expectedSymbol && chartData.symbol !== expectedSymbol) return []
   const segments = safeObject(chartData?.segments)
   const source = safeArray(segments.active).length ? safeArray(segments.active) : safeArray(chartData?.candles)
-  return source.filter(candle => (
-    Number.isFinite(Number(candle?.time)) &&
-    Number.isFinite(Number(candle?.open)) &&
-    Number.isFinite(Number(candle?.high)) &&
-    Number.isFinite(Number(candle?.low)) &&
-    Number.isFinite(Number(candle?.close))
-  )).slice(-500)
+  return normalizeChartCandles(source, 500)
 }
 
 function decisionQualityLabel(status) {
@@ -3028,7 +3024,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     const chart = chartRef.current
     const candleSeries = candleSeriesRef.current
     if (!chart || !candleSeries) return
-    const datasetIdentity = `${asset}:${chartData?.symbol || 'unknown'}:${timeframe}:${candles.length}:${candles[0]?.time || 0}:${candles[0]?.close || 0}`
+    const datasetIdentity = `${asset}:${chartData?.symbol || 'unknown'}:${timeframe}:${candles.length}:${candles[0]?.time || 0}:${candles[0]?.close || 0}:${candles.at(-1)?.time || 0}`
     const sameDataset = candleDatasetRef.current === datasetIdentity
     if (sameDataset && candles.length) {
       candleSeries.update(candles[candles.length - 1])
@@ -3036,12 +3032,12 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
       candleSeries.setData(candles)
       candleDatasetRef.current = datasetIdentity
     }
-    flowSeriesRef.current?.setData(safeArray(panelData.market_pressure).map(item => ({
+    flowSeriesRef.current?.setData(normalizeChartSeries(panelData.market_pressure, item => ({
       time: item.time,
       value: Number(item.value) || 0,
       color: macdBarColor(item),
     })))
-    pressureSeriesRef.current?.setData(safeArray(panelData.liquidity_pressure).map(item => {
+    pressureSeriesRef.current?.setData(normalizeChartSeries(panelData.liquidity_pressure, item => {
       const rawValue = Number(item.raw_value ?? (Number(item.value) + 50))
       const value = Number.isFinite(rawValue) ? rawValue : 50
       return {
@@ -6501,33 +6497,35 @@ export default function App() {
       )}
 
       {chartMode === 'signal' && (
-        <SignalChartView
-          asset={asset}
-          timeframe={timeframe}
-          timeframeTransition={timeframeTransition}
-          chartData={chartData}
-          overlays={overlays}
-          panels={panels}
-          analysis={activeAnalysis}
-          providerAlignment={activeProviderAlignment}
-          liveSync={liveChartState}
-          mtfSnapshot={mtfSnapshot}
-          diamondHistory={diamondHistory}
-          diamondValidation={diamondValidation}
-          strategyGovernance={strategyGovernance || activeAnalysis?.strategy_governance}
-          marketAlerts={marketAlerts}
-          validationLoading={validationLoading}
-          setupTracker={setupTracker}
-          sessionFramework={sessionFramework || activeAnalysis?.session_framework}
-          keyZones={keyZones || activeAnalysis?.key_zones}
-          newsIntelligence={newsIntelligence || activeAnalysis?.news_intelligence}
-          focusRequest={mobileFocusRequest}
-          onRunValidation={validateDiamondEvidence}
-          onAcknowledgeAlert={handleAcknowledgeAlert}
-          onTimeframe={handleTimeframe}
-          onTradingView={() => handleChartMode('tradingview')}
-          onNews={() => setNewsCalendarOpen(true)}
-        />
+        <WorkspaceErrorBoundary resetToken={`${asset}:${timeframe}:${chartData?.candles?.at(-1)?.time || chartData?.segments?.active?.at(-1)?.time || 'empty'}`}>
+          <SignalChartView
+            asset={asset}
+            timeframe={timeframe}
+            timeframeTransition={timeframeTransition}
+            chartData={chartData}
+            overlays={overlays}
+            panels={panels}
+            analysis={activeAnalysis}
+            providerAlignment={activeProviderAlignment}
+            liveSync={liveChartState}
+            mtfSnapshot={mtfSnapshot}
+            diamondHistory={diamondHistory}
+            diamondValidation={diamondValidation}
+            strategyGovernance={strategyGovernance || activeAnalysis?.strategy_governance}
+            marketAlerts={marketAlerts}
+            validationLoading={validationLoading}
+            setupTracker={setupTracker}
+            sessionFramework={sessionFramework || activeAnalysis?.session_framework}
+            keyZones={keyZones || activeAnalysis?.key_zones}
+            newsIntelligence={newsIntelligence || activeAnalysis?.news_intelligence}
+            focusRequest={mobileFocusRequest}
+            onRunValidation={validateDiamondEvidence}
+            onAcknowledgeAlert={handleAcknowledgeAlert}
+            onTimeframe={handleTimeframe}
+            onTradingView={() => handleChartMode('tradingview')}
+            onNews={() => setNewsCalendarOpen(true)}
+          />
+        </WorkspaceErrorBoundary>
       )}
 
       {chartMode === 'tradingview' && !isMobileLayout && (

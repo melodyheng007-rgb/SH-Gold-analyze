@@ -491,6 +491,35 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   color: #ff8a65;
 }
 
+.workspace-chart-recovery {
+  min-height: clamp(360px, 58dvh, 680px);
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 9px;
+  padding: 20px;
+  color: #8fdcff;
+  border: 1px solid #26364a;
+  background: #07101f;
+  text-align: center;
+}
+.workspace-chart-recovery strong { color: #edf4fb; font-size: 16px; }
+.workspace-chart-recovery p { max-width: 360px; margin: 0; color: #8b9aaf; font-size: 12px; }
+.workspace-chart-recovery button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 7px 12px;
+  color: #dce9f5;
+  border: 1px solid #40536a;
+  border-radius: 6px;
+  background: #101b2b;
+  font-weight: 800;
+}
+.workspace-chart-recovery button:hover { color: #f4cf62; border-color: #75662f; }
+
 .data-mode-badge {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
