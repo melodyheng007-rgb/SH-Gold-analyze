@@ -27,15 +27,22 @@ export function diamondHistoricalScore(entry = {}) {
 
 export function diamondWasVisible(entry = {}, minimumScore = null) {
   const classification = String(entry.classification || 'CONTEXT').toUpperCase()
+  const productionResult = ['CONFIRMED', 'AUTO_ENTRY'].includes(classification)
+  if (entry.strategy_confirmed_origin === false && !productionResult) return false
   const peakGrade = String(entry.peak_diamond_grade || entry.diamond_grade || '').toUpperCase()
   const explicitMinimum = Number(minimumScore)
   const scoreFloor = minimumScore !== null && Number.isFinite(explicitMinimum)
     ? explicitMinimum
     : String(entry.symbol || '').toUpperCase() === 'XAUUSD' ? 45 : 50
+  const setupConfirmed = entry.strategy_confirmed_origin === true
   return entry.ever_visible === true
     || ['QUALIFIED', 'CONFIRMED', 'AUTO_ENTRY'].includes(classification)
-    || ['A+', 'A', 'B', 'C', 'D'].includes(peakGrade)
-    || diamondHistoricalScore(entry) >= scoreFloor
+    || (setupConfirmed && ['A+', 'A', 'B', 'C', 'D'].includes(peakGrade))
+    || (setupConfirmed && diamondHistoricalScore(entry) >= scoreFloor)
+    || (entry.strategy_confirmed_origin == null && (
+      ['A+', 'A', 'B', 'C', 'D'].includes(peakGrade)
+      || diamondHistoricalScore(entry) >= scoreFloor
+    ))
 }
 
 export function diamondIsProductionResult(classification) {

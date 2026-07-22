@@ -64,3 +64,15 @@ test('legacy evidence restores a previously visible Diamond', () => {
   assert.equal(diamondWasVisible({ classification: 'CONTEXT', diamond_score: 49 }), false)
   assert.equal(diamondWasVisible({ symbol: 'XAUUSD', classification: 'CONTEXT', diamond_score: 46 }), true)
 })
+
+test('new score-only observations never become historical Diamonds', () => {
+  const scoreOnly = {
+    classification: 'CONTEXT',
+    strategy_confirmed_origin: false,
+    diamond_score: 95,
+    peak_diamond_grade: 'A+',
+    ever_visible: false,
+  }
+  assert.equal(diamondWasVisible(scoreOnly), false)
+  assert.equal(diamondWasVisible({ ...scoreOnly, strategy_confirmed_origin: true }), true)
+})

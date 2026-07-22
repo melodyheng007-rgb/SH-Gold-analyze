@@ -253,6 +253,7 @@ class ProviderAlignmentTests(unittest.TestCase):
         engine = DataIntegrityEngine(self.store)
         chart = engine.chart_data("5M", 100)
         panels = engine.indicator_panels("5M", 100)
+        bundle = engine.chart_bundle("5M", 100)
         snapshot = engine.timeframe_snapshot("5M", 100)
 
         self.assertEqual({item["source"] for item in chart["candles"]}, {BINANCE_HISTORY_SOURCE})
@@ -260,6 +261,13 @@ class ProviderAlignmentTests(unittest.TestCase):
         self.assertEqual(chart["data_integrity"]["chart_source"], BINANCE_HISTORY_SOURCE)
         self.assertGreater(len(panels["indicator_panels"]["boys_selling"]), 0)
         self.assertGreater(len(panels["indicator_panels"]["bearishness"]), 0)
+        self.assertNotIn("frames", bundle["chart_data"])
+        self.assertEqual(bundle["panels"]["status"], "READY")
+        self.assertEqual(bundle["panels"]["readiness"]["status"], "READY")
+        self.assertEqual(bundle["panels"]["readiness"]["required_closed_candles"], 35)
+        self.assertTrue(bundle["panels"]["readiness"]["independent_from_full_analysis"])
+        self.assertEqual(bundle["panels"]["readiness"]["source"], BINANCE_HISTORY_SOURCE)
+        self.assertGreater(bundle["overlays"]["overlay_status"]["ready_count"], 0)
         indicator_snapshot = panels["indicator_panels"]["indicator_snapshot"]
         self.assertEqual(indicator_snapshot["status"], "READY")
         self.assertEqual(indicator_snapshot["source"], "CLOSED_PROVIDER_CANDLES")

@@ -12,8 +12,9 @@ from typing import Any, Dict, Iterable, Optional
 from .key_zone import DiamondZoneEngine
 
 
-ENGINE_VERSION = "DIAMOND_V7_ADAPTIVE_ASSET_PROFILE"
-STRATEGY_NAME = "SH_DIAMOND_ZONE_V7_ADAPTIVE_DISCOVERY"
+ENGINE_VERSION = "DIAMOND_V8.5_WALK_FORWARD_SMT_GUARD"
+STRATEGY_NAME = "SH_DIAMOND_ZONE_V8_5_ADAPTIVE_SMT"
+REPLAY_OUTCOME_MODEL = "TOUCH_INVALIDATION_1_5_ATR_V1"
 MIN_HISTORY_BARS = 220
 DEFAULT_HORIZON = {"5M": 48, "15M": 48, "1H": 32, "4H": 20, "1D": 10}
 
@@ -166,7 +167,9 @@ class DiamondValidationLab:
         qualified_origins: set[str] = set()
         context_origins: set[str] = set()
         seen_events: set[str] = set()
+        seen_replay_zones: set[str] = set()
         trades: list[Dict[str, Any]] = []
+        replay_zones: list[Dict[str, Any]] = []
         trace_states: Dict[str, Dict[str, Any]] = {}
         scan_count = 0
         last_mature_index = len(rows) - horizon - 1
@@ -189,6 +192,20 @@ class DiamondValidationLab:
                 context_origins.add(zone_id)
                 if zone.get("entry_eligible_origin"):
                     qualified_origins.add(zone_id)
+                if (
+                    zone_id not in seen_replay_zones
+                    and zone.get("strategy_confirmed_origin") is True
+                    and zone.get("display_as_diamond") is True
+                ):
+                    seen_replay_zones.add(zone_id)
+                    future = rows[end_index + 1:end_index + horizon + 1]
+                    replay_zones.append(self._evaluate_replay_zone(
+                        symbol,
+                        timeframe,
+                        zone,
+                        int(rows[end_index]["time"]),
+                        future,
+                    ))
 
             current_time = int(rows[end_index]["time"])
             for event in snapshot.get("entry_events") or []:
@@ -201,6 +218,7 @@ class DiamondValidationLab:
                 trades.append(self._evaluate_event(symbol, timeframe, event, future))
 
         summary = self._summary(trades)
+        replay_summary = self._replay_summary(replay_zones)
         confidence = self._sample_confidence(summary["resolved"])
         failure_diagnostics = self._failure_diagnostics(trace_states, summary["confirmed_events"])
         return {
@@ -221,6 +239,8 @@ class DiamondValidationLab:
             "context_origins": len(context_origins),
             "qualified_origins": len(qualified_origins),
             "summary": summary,
+            "replay_summary": replay_summary,
+            "replay_outcome_model": REPLAY_OUTCOME_MODEL,
             "sample_confidence": confidence,
             "failure_diagnostics": failure_diagnostics,
             "result_integrity": {
@@ -234,9 +254,105 @@ class DiamondValidationLab:
             },
             "segments": self._segments(trades),
             "trades": trades[-120:],
+            "replay_zones": replay_zones[-200:],
             "horizon_bars": horizon,
             "methodology": self.methodology(),
             "risk_note": "Historical evidence is not a guarantee of future performance.",
+        }
+
+    @staticmethod
+    def _evaluate_replay_zone(
+        symbol: str,
+        timeframe: str,
+        zone: Dict[str, Any],
+        detected_time: int,
+        future: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        side = str(zone.get("entry_side") or zone.get("direction") or "").upper()
+        buy = side in {"BUY", "BULLISH"}
+        side = "BUY" if buy else "SELL"
+        line = float(zone.get("line") or 0)
+        atr = max(float(zone.get("atr_14") or 0), 1e-9)
+        low = float(zone.get("low") or line)
+        high = float(zone.get("high") or line)
+        invalidation = low - atr * 0.10 if buy else high + atr * 0.10
+        reaction_atr = 1.5
+        reaction_level = line + atr * reaction_atr if buy else line - atr * reaction_atr
+        outcome = "WATCHING"
+        resolved_time = None
+        maximum_favorable_atr = 0.0
+        maximum_adverse_atr = 0.0
+
+        for candle in future:
+            favorable = float(candle["high"]) - line if buy else line - float(candle["low"])
+            adverse = line - float(candle["low"]) if buy else float(candle["high"]) - line
+            maximum_favorable_atr = max(maximum_favorable_atr, favorable / atr)
+            maximum_adverse_atr = max(maximum_adverse_atr, adverse / atr)
+            respected = float(candle["high"]) >= reaction_level if buy else float(candle["low"]) <= reaction_level
+            failed = float(candle["low"]) <= invalidation if buy else float(candle["high"]) >= invalidation
+            if respected and failed:
+                outcome = "AMBIGUOUS"
+                resolved_time = int(candle["time"])
+                break
+            if failed:
+                outcome = "FAILED"
+                resolved_time = int(candle["time"])
+                break
+            if respected:
+                outcome = "RESPECTED"
+                resolved_time = int(candle["time"])
+                break
+
+        score = int(zone.get("diamond_score") or zone.get("diamond_confidence_score") or 0)
+        return {
+            "zone_key": f"replay:{symbol}:{timeframe}:{zone.get('id')}",
+            "zone_id": zone.get("id"),
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "origin_time": int(zone.get("time") or detected_time),
+            "detected_time": int(detected_time),
+            "detected_at": DiamondValidationLab._iso(detected_time),
+            "resolved_time": resolved_time,
+            "resolved_at": DiamondValidationLab._iso(resolved_time) if resolved_time else None,
+            "entry_side": side,
+            "direction": "BULLISH" if buy else "BEARISH",
+            "line": round(line, 5),
+            "zone_low": round(low, 5),
+            "zone_high": round(high, 5),
+            "origin_model": zone.get("origin_model"),
+            "diamond_score": score,
+            "diamond_grade": zone.get("diamond_grade"),
+            "signal_tier": "QUALIFIED",
+            "classification": "QUALIFIED",
+            "strategy_confirmed_origin": True,
+            "display_as_diamond": True,
+            "score_creates_diamond": False,
+            "outcome": outcome,
+            "verification_status": outcome,
+            "reaction_atr": reaction_atr,
+            "maximum_favorable_atr": round(maximum_favorable_atr, 3),
+            "maximum_adverse_atr": round(maximum_adverse_atr, 3),
+            "closed_candle_only": True,
+            "engine_replay": True,
+        }
+
+    @staticmethod
+    def _replay_summary(replay_zones: list[Dict[str, Any]]) -> Dict[str, Any]:
+        respected = sum(1 for zone in replay_zones if zone.get("outcome") == "RESPECTED")
+        failed = sum(1 for zone in replay_zones if zone.get("outcome") == "FAILED")
+        ambiguous = sum(1 for zone in replay_zones if zone.get("outcome") == "AMBIGUOUS")
+        watching = sum(1 for zone in replay_zones if zone.get("outcome") == "WATCHING")
+        resolved = respected + failed
+        return {
+            "strategy_confirmed_setups": len(replay_zones),
+            "respected": respected,
+            "failed": failed,
+            "ambiguous": ambiguous,
+            "watching": watching,
+            "resolved": resolved,
+            "respect_rate": round(respected / resolved * 100, 1) if resolved else None,
+            "buy_zones": sum(1 for zone in replay_zones if zone.get("entry_side") == "BUY"),
+            "sell_zones": sum(1 for zone in replay_zones if zone.get("entry_side") == "SELL"),
         }
 
     @staticmethod
@@ -482,6 +598,8 @@ class DiamondValidationLab:
         return {
             "mode": "EXPANDING_CLOSED_CANDLE_WALK_FORWARD",
             "signal_timing": "An event is accepted only when its confirmation_time equals the current historical candle.",
+            "zone_replay": "A historical Diamond is plotted only after the current engine confirms its strategy setup on completed candles; score grades the setup but cannot create it.",
+            "zone_outcome": "RESPECTED requires a 1.5-ATR favorable reaction before price touches the structural invalidation boundary; a same-candle touch of both sides is AMBIGUOUS.",
             "outcome_timing": "Only later completed candles can resolve stop or fixed-R target.",
             "same_candle_policy": "Stop and target touched on the same candle is AMBIGUOUS and excluded from win rate.",
             "look_ahead": False,
@@ -507,6 +625,7 @@ class DiamondValidationLab:
             "count": len(rows),
             "last_close": rows[-1]["close"],
             "horizon": horizon,
+            "replay_outcome_model": REPLAY_OUTCOME_MODEL,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 

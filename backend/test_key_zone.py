@@ -53,7 +53,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertIn(result["primary_zone"]["lifecycle"], {"FRESH", "TESTED"})
         self.assertIn(result["quality_grade"], {"A+", "A", "B", "C"})
         self.assertEqual(result["confirmation_state"], "CONFIRMED_HOLD")
-        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V7_ADAPTIVE_DISCOVERY")
+        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V8_5_ADAPTIVE_SMT")
         self.assertEqual(result["profile"], "XAU_ADAPTIVE_PRECISION_V7_5M")
         self.assertEqual(result["adaptive_profile"]["asset_model"], "XAU_PRECISION")
         self.assertTrue(result["adaptive_profile"]["quality_floor_preserved"])
@@ -487,10 +487,15 @@ class DiamondZoneEngineTests(unittest.TestCase):
                 {"origin", "location", "structure", "discovery", "lifecycle", "rejection", "confirmation", "risk"},
             )
             if zone["display_as_diamond"]:
+                self.assertTrue(zone["strategy_confirmed_origin"])
                 self.assertGreaterEqual(zone["diamond_score"], result["minimum_visible_diamond_score"])
                 self.assertIn(zone["diamond_grade"], {"A+", "A", "B", "C", "D"})
             else:
-                self.assertTrue(zone["diamond_score"] < result["minimum_visible_diamond_score"] or zone["diamond_confidence_tier"] == "INVALIDATED")
+                self.assertTrue(
+                    not zone["strategy_confirmed_origin"]
+                    or zone["diamond_score"] < result["minimum_visible_diamond_score"]
+                    or zone["diamond_confidence_tier"] == "INVALIDATED"
+                )
             if zone["entry_score_qualified"]:
                 self.assertGreaterEqual(zone["diamond_score"], 60)
                 self.assertIn(zone["diamond_grade"], {"A+", "A", "B", "C"})
@@ -706,7 +711,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertGreater(adaptive["min_entry_quality"], base["min_entry_quality"])
         self.assertLess(adaptive["max_live_chase_atr"], base["max_live_chase_atr"])
 
-    def test_adaptive_density_merges_nearby_choppy_origins_but_keeps_stronger_zone(self) -> None:
+    def test_adaptive_density_keeps_only_strongest_nearby_flip_cluster(self) -> None:
         profile = self.engine._profile("XAUUSD", "5M") | {
             "zone_merge_distance_atr": 0.30,
             "zone_merge_window_bars": 8,
@@ -719,7 +724,43 @@ class DiamondZoneEngineTests(unittest.TestCase):
 
         selected = self.engine._distinct_recent(candidates, 10, profile)
 
-        self.assertEqual({item["id"] for item in selected}, {"strong", "separate"})
+        self.assertEqual({item["id"] for item in selected}, {"strong"})
+
+    def test_strong_trend_guard_blocks_single_wick_countertrend_origin(self) -> None:
+        candles = []
+        for index in range(64):
+            opened = 100.0 + index * 0.45
+            close = opened + 0.32
+            candles.append({
+                "time": 1_700_000_000 + index * 300,
+                "open": opened,
+                "high": close + 0.10,
+                "low": opened - 0.10,
+                "close": close,
+                "is_complete": True,
+            })
+        candles[-1].update(open=129.1, high=132.6, low=128.7, close=129.0)
+        rows = self.engine._candles(candles)
+        profile = self.engine._style_adjusted_profile(
+            self.engine._profile("XAUUSD", "5M"),
+            "SCALPING",
+            "5M",
+        )
+        atr = self.engine._atr_at(rows, len(rows) - 1, 14)
+        trend = self.engine._trend_context_at(rows, len(rows) - 1, atr, profile)
+
+        candidate = self.engine._scalp_wick_rejection_candidate(
+            rows,
+            len(rows) - 1,
+            atr,
+            profile,
+            "MIXED",
+            trend,
+        )
+
+        self.assertTrue(trend["is_strong"])
+        self.assertEqual(trend["direction"], "BULLISH")
+        self.assertIsNone(candidate)
 
     def test_scalp_and_swing_profiles_adjust_timing_without_lowering_quality(self) -> None:
         base_5m = self.engine._profile("XAUUSD", "5M")
@@ -727,12 +768,16 @@ class DiamondZoneEngineTests(unittest.TestCase):
         base_1h = self.engine._profile("XAUUSD", "1H")
         swing = self.engine._style_adjusted_profile(base_1h, "SWING", "1H")
 
-        self.assertEqual(scalp["target_diamonds_per_100_bars"], "3-6")
+        self.assertEqual(scalp["target_diamonds_per_100_bars"], "4-6")
+        self.assertEqual(scalp["core_execution_timeframe"], "5M")
+        self.assertEqual(scalp["core_structure_timeframe"], "1H")
         self.assertLess(scalp["entry_cooldown_bars"], base_5m["entry_cooldown_bars"])
         self.assertEqual(scalp["min_entry_quality"], base_5m["min_entry_quality"])
-        self.assertEqual(swing["target_diamonds_per_100_bars"], "2-4")
+        self.assertEqual(swing["target_diamonds_per_100_bars"], "3-5")
+        self.assertEqual(swing["core_execution_timeframe"], "1H")
+        self.assertEqual(swing["core_structure_timeframe"], "1D")
         self.assertGreater(swing["lead_zone_max_age_bars"], base_1h["lead_zone_max_age_bars"])
-        self.assertEqual(swing["min_entry_quality"], base_1h["min_entry_quality"])
+        self.assertGreaterEqual(swing["min_entry_quality"], base_1h["min_entry_quality"])
 
     def test_scalp_lead_floor_adapts_without_lowering_confirmed_entry_quality(self) -> None:
         base = self.engine._profile("XAUUSD", "5M")
@@ -758,7 +803,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertEqual(normal["min_entry_quality"], base["min_entry_quality"])
         self.assertEqual(elevated["min_entry_quality"], base["min_entry_quality"])
 
-    def test_scalp_wick_rejection_publishes_one_sell_key_zone_at_candle_high(self) -> None:
+    def test_countertrend_scalp_wick_stays_internal_until_strategy_confirms(self) -> None:
         candles = base_candles(38)
         origin_time = candles[30]["time"]
         candles[30].update(open=100.0, high=104.0, low=99.8, close=102.0)
@@ -783,9 +828,11 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertEqual(zone["time"], origin_time)
         self.assertEqual(zone["entry_side"], "SELL")
         self.assertEqual(zone["line"], 104.0)
-        self.assertTrue(zone["display_as_diamond"])
-        self.assertTrue(zone["is_lead_diamond"])
+        self.assertFalse(zone["strategy_confirmed_origin"])
+        self.assertFalse(zone["display_as_diamond"])
+        self.assertFalse(zone["is_lead_diamond"])
         self.assertFalse(zone["entry_eligible_origin"])
+        self.assertEqual(zone["entry_blocker"], "STRATEGY_SETUP_NOT_CONFIRMED")
         self.assertIn("SCALP_COUNTERTREND_WATCH", zone["diamond_confidence_reasons"])
         self.assertEqual(result["entry_events"], [])
 
@@ -851,6 +898,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         profile = self.engine._profile("XAUUSD", "5M")
         base = {
             "display_as_diamond": True,
+            "strategy_confirmed_origin": True,
             "entry_eligible_origin": True,
             "lifecycle": "FRESH",
             "zone_health": "WATCH",
@@ -877,6 +925,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         zones = [{
             "id": "opposite",
             "display_as_diamond": True,
+            "strategy_confirmed_origin": True,
             "entry_eligible_origin": True,
             "diamond_score": 82,
             "lifecycle": "FRESH",
@@ -899,6 +948,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         zones = [{
             "id": "context-only",
             "display_as_diamond": True,
+            "strategy_confirmed_origin": True,
             "entry_eligible_origin": True,
             "diamond_score": 78,
             "lifecycle": "FRESH",
@@ -915,6 +965,29 @@ class DiamondZoneEngineTests(unittest.TestCase):
         }]
 
         self.assertIsNone(self.engine._lead_diamond_zone(zones, [], "BULLISH", profile))
+
+    def test_high_score_without_confirmed_strategy_never_becomes_lead_diamond(self) -> None:
+        profile = self.engine._profile("XAUUSD", "5M")
+        zone = {
+            "id": "score-only",
+            "display_as_diamond": True,
+            "strategy_confirmed_origin": False,
+            "entry_eligible_origin": True,
+            "diamond_score": 99,
+            "lifecycle": "FRESH",
+            "zone_health": "WATCH",
+            "origin_broken": False,
+            "direction_holding": True,
+            "age_bars": 1,
+            "distance_atr": 0.2,
+            "direction": "BULLISH",
+            "display_role": "QUALIFIED_WATCH",
+            "execution_quality": "READY",
+            "price_side": "ABOVE",
+            "time": 100,
+        }
+
+        self.assertIsNone(self.engine._lead_diamond_zone([zone], [], "BULLISH", profile))
 
     def test_historical_confirmed_event_survives_after_live_zone_flips_without_staying_visible(self) -> None:
         candles = base_candles(40)

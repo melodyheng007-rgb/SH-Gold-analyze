@@ -70,6 +70,7 @@ class DiamondHistory:
                     peak_diamond_score REAL,
                     peak_diamond_grade TEXT,
                     ever_visible INTEGER NOT NULL DEFAULT 0,
+                    strategy_confirmed_origin INTEGER,
                     event_id TEXT,
                     event_time INTEGER,
                     entry_price REAL,
@@ -125,6 +126,7 @@ class DiamondHistory:
                 "peak_diamond_score": "REAL",
                 "peak_diamond_grade": "TEXT",
                 "ever_visible": "INTEGER NOT NULL DEFAULT 0",
+                "strategy_confirmed_origin": "INTEGER",
             }
             for name, definition in additions.items():
                 if name not in columns:
@@ -177,6 +179,7 @@ class DiamondHistory:
             """
             SELECT h.zone_key, h.symbol, h.classification, h.diamond_score, h.diamond_grade,
                    h.peak_diamond_score, h.peak_diamond_grade, h.ever_visible,
+                   h.strategy_confirmed_origin,
                    e.evidence_json
             FROM diamond_zone_history h
             LEFT JOIN diamond_evidence_ledger e ON e.zone_key = h.zone_key
@@ -194,10 +197,11 @@ class DiamondHistory:
             peak_score = max(scores) if scores else 0.0
             visibility_floor = self._visibility_floor(row["symbol"])
             peak_grade = self._grade(peak_score, visibility_floor)
+            legacy_visibility = row["strategy_confirmed_origin"] is None
             ever_visible = bool(
                 row["ever_visible"]
-                or peak_score >= visibility_floor
                 or CLASSIFICATION_RANK.get(str(row["classification"] or "CONTEXT").upper(), 0) >= CLASSIFICATION_RANK["QUALIFIED"]
+                or (legacy_visibility and peak_score >= visibility_floor)
             )
             connection.execute(
                 """
@@ -270,8 +274,10 @@ class DiamondHistory:
                     and event_id
                     and (analysis.get("diamond_auto_entry") or {}).get("entry_event_id") == event_id
                 )
+                strategy_confirmed_origin = bool(event_id or zone.get("strategy_confirmed_origin") is True)
                 qualified_watch = bool(
-                    zone.get("entry_eligible_origin")
+                    strategy_confirmed_origin
+                    and zone.get("entry_eligible_origin")
                     and str(zone.get("display_role") or "QUALIFIED_WATCH") != "INVALIDATED_CONTEXT"
                     and str(zone.get("execution_quality") or "") != "INVALID"
                     and diamond_grade in {"A+", "A", "B", "C"}
@@ -320,9 +326,10 @@ class DiamondHistory:
                         zone_high, origin_model, origin_quality, quality_grade, entry_eligible,
                         classification, lifecycle, execution_quality, rejection_status, zone_strength,
                         diamond_score, diamond_grade, grade_model,
+                        strategy_confirmed_origin,
                         event_id, event_time, entry_price, stop_price, target_price, event_quality,
                         precision_grade, tracked_setup_id, verification_status, note
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(zone_key) DO UPDATE SET
                         updated_at = excluded.updated_at,
                         source = excluded.source,
@@ -343,6 +350,10 @@ class DiamondHistory:
                         diamond_score = excluded.diamond_score,
                         diamond_grade = excluded.diamond_grade,
                         grade_model = excluded.grade_model,
+                        strategy_confirmed_origin = MAX(
+                            COALESCE(diamond_zone_history.strategy_confirmed_origin, 0),
+                            excluded.strategy_confirmed_origin
+                        ),
                         event_id = COALESCE(excluded.event_id, diamond_zone_history.event_id),
                         event_time = COALESCE(excluded.event_time, diamond_zone_history.event_time),
                         entry_price = COALESCE(excluded.entry_price, diamond_zone_history.entry_price),
@@ -366,6 +377,7 @@ class DiamondHistory:
                         1 if zone.get("entry_eligible_origin") else 0, classification, zone.get("lifecycle"),
                         zone.get("execution_quality"), zone.get("rejection_status"),
                         self._number(zone.get("zone_strength_score")), diamond_score, diamond_grade, grade_model,
+                        1 if strategy_confirmed_origin else 0,
                         event_id, self._integer(event.get("time")),
                         entry, stop, target, self._number(event.get("quality_score")),
                         event.get("precision_grade"), tracked_setup.get("id") if diamond_tracked else None,
@@ -375,7 +387,7 @@ class DiamondHistory:
                 current_score = float(diamond_score or 0)
                 current_grade = diamond_grade if diamond_grade in {"A+", "A", "B", "C", "D"} else self._grade(current_score)
                 visible_now = bool(
-                    zone.get("display_as_diamond") is True
+                    (strategy_confirmed_origin and zone.get("display_as_diamond") is True)
                     or CLASSIFICATION_RANK.get(classification, 0) >= CLASSIFICATION_RANK["QUALIFIED"]
                 )
                 connection.execute(
@@ -499,6 +511,9 @@ class DiamondHistory:
         news = analysis.get("news_intelligence") or {}
         session = analysis.get("session_framework") or {}
         k_trend = session.get("k_trend") or {}
+        smr = analysis.get("smr_model") or zones_result.get("smr_model") or {}
+        smr_session = smr.get("session") or {}
+        dual_core = analysis.get("diamond_timeframe_model") or zones_result.get("diamond_timeframe_model") or {}
         mtf = zones_result.get("mtf_confluence") or {}
         event_time = self._integer(event.get("confirmation_time") or event.get("available_at") or event.get("time"))
         origin_time = self._integer(zone.get("time"))
@@ -535,6 +550,39 @@ class DiamondHistory:
                 "range_location": (regime.get("metrics") or {}).get("range_location"),
                 "volatility_ratio": (regime.get("metrics") or {}).get("volatility_ratio"),
             },
+            "smr": {
+                "engine": smr.get("engine"),
+                "pattern_state": smr.get("pattern_state"),
+                "direction": smr.get("direction"),
+                "score": smr.get("score"),
+                "grade": smr.get("grade"),
+                "execution_gate": smr.get("execution_gate"),
+                "diamond_alignment": smr.get("diamond_alignment"),
+                "session": smr_session.get("name"),
+                "session_quality": smr_session.get("quality"),
+                "evidence": {
+                    "liquidity_raid": bool((smr.get("evidence") or {}).get("liquidity_raid")),
+                    "structure_shift": bool((smr.get("evidence") or {}).get("structure_shift")),
+                    "fvg": bool((smr.get("evidence") or {}).get("fvg")),
+                    "fvg_retest": bool((smr.get("evidence") or {}).get("fvg_retest")),
+                },
+            },
+            "dual_core": {
+                "engine": dual_core.get("engine"),
+                "focus_timeframe": dual_core.get("focus_timeframe"),
+                "state": dual_core.get("state"),
+                "score": dual_core.get("score"),
+                "grade": dual_core.get("grade"),
+                "execution_gate": dual_core.get("execution_gate"),
+                "consensus_direction": dual_core.get("consensus_direction"),
+                "agreement": dual_core.get("agreement"),
+                "hard_conflicts": list(dual_core.get("hard_conflicts") or []),
+                "concepts": {
+                    str(item.get("id")): item.get("state")
+                    for item in (dual_core.get("concepts") or [])
+                    if item.get("id")
+                },
+            },
             "decision": {
                 "status": decision.get("status"),
                 "score": decision.get("score"),
@@ -564,6 +612,9 @@ class DiamondHistory:
                 "diamond_score": event.get("diamond_score") or event.get("quality_score") or zone.get("diamond_score") or zone.get("diamond_confidence_score"),
                 "diamond_grade": event.get("diamond_grade") or event.get("precision_grade") or zone.get("diamond_grade"),
                 "grade_model": zone.get("grade_model") or event.get("grade_model"),
+                "strategy_confirmed_origin": bool(event or zone.get("strategy_confirmed_origin") is True),
+                "creation_gate": zone.get("diamond_creation_gate"),
+                "score_role": zone.get("score_role") or "QUALITY_GRADE_ONLY",
                 "score_components": zone.get("score_components") or {},
                 "score_penalties": zone.get("score_penalties") or {},
                 "lifecycle": zone.get("lifecycle"),
@@ -1029,6 +1080,8 @@ class DiamondHistory:
         result["feed_matched"] = bool(result["feed_matched"])
         result["entry_eligible"] = bool(result["entry_eligible"])
         result["ever_visible"] = bool(result.get("ever_visible"))
+        if result.get("strategy_confirmed_origin") is not None:
+            result["strategy_confirmed_origin"] = bool(result["strategy_confirmed_origin"])
         evidence = self._json_object(row["evidence_json"] if "evidence_json" in row.keys() else None)
         lifecycle = self._json_list(row["lifecycle_json"] if "lifecycle_json" in row.keys() else None)
         forward_returns = self._json_object(row["forward_returns_json"] if "forward_returns_json" in row.keys() else None)
@@ -1061,10 +1114,11 @@ class DiamondHistory:
         peak_score = max(peak_scores) if peak_scores else 0.0
         result["peak_diamond_score"] = round(peak_score)
         result["peak_diamond_grade"] = self._grade(peak_score, visibility_floor)
+        legacy_visibility = result.get("strategy_confirmed_origin") is None
         result["ever_visible"] = bool(
             result["ever_visible"]
-            or peak_score >= visibility_floor
             or CLASSIFICATION_RANK.get(str(result.get("classification") or "CONTEXT").upper(), 0) >= CLASSIFICATION_RANK["QUALIFIED"]
+            or (legacy_visibility and peak_score >= visibility_floor)
         )
         verification = str(result.get("verification_status") or "").upper()
         if verification in {"INVALIDATED_NO_ENTRY", "CANCELLED"}:

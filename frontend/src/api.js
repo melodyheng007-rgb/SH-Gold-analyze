@@ -200,6 +200,27 @@ export async function verifyOandaFeed(settings) {
   })
 }
 
+export async function getTelegramAlertSettings() {
+  return await apiRequest('/api/alerts/telegram-settings', { timeoutMs: 5000 })
+}
+
+export async function saveTelegramAlertSettings(settings) {
+  return await apiRequest('/api/alerts/telegram-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+}
+
+export async function testTelegramAlert(settings) {
+  return await apiRequest('/api/alerts/telegram-test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+    timeoutMs: 15000,
+  })
+}
+
 export async function startLiveBuilder() {
   return await apiRequest('/api/xauusd/start-live-builder', { method: 'POST' })
 }

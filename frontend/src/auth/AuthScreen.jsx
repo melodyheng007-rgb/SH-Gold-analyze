@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { normalizeEmail, validateAuthForm } from './authValidation.js'
 import { AUTH_REQUEST_TIMEOUT_CODE } from './authRequest.js'
+import { RECOVERY_LINK_INVALID, RECOVERY_SESSION_MISSING } from './recoverySession.js'
 import { useAuth } from './AuthProvider.jsx'
 
 const EMPTY_FORM = { fullName: '', email: '', password: '', confirmPassword: '', otp: '' }
@@ -30,6 +31,15 @@ function friendlyAuthError(error) {
   }
   if (code === 'account_configuration_invalid' || value.includes('invalid api key')) {
     return 'Account access is not configured correctly. Please contact support.'
+  }
+  if ([RECOVERY_LINK_INVALID.toLowerCase(), RECOVERY_SESSION_MISSING.toLowerCase()].includes(code)) {
+    return 'This recovery link is invalid or expired. Request a new link and use only the latest email.'
+  }
+  if (value.includes('auth session missing') || value.includes('recovery session')) {
+    return 'This recovery link is invalid or expired. Request a new link and use only the latest email.'
+  }
+  if (value.includes('same password') || value.includes('different from the old')) {
+    return 'Choose a password that is different from your previous password.'
   }
   if (value.includes('error sending') || value.includes('smtp') || value.includes('confirmation email')) {
     return 'We could not send the confirmation email. Please try again shortly.'
@@ -83,6 +93,12 @@ export function AuthScreen({ recovery = false, onClose = null }) {
   useEffect(() => {
     if (recovery) setMode('reset')
   }, [recovery])
+
+  useEffect(() => {
+    if (mode === 'reset' && auth.recoveryError) {
+      setError(friendlyAuthError(auth.recoveryError))
+    }
+  }, [auth.recoveryError, mode])
 
   useEffect(() => {
     if (resendSeconds <= 0) return undefined
@@ -226,7 +242,7 @@ export function AuthScreen({ recovery = false, onClose = null }) {
     <main className="auth-screen">
       <section className="auth-brand" aria-label="SH Market Analyzer">
         <div className="auth-brand-mark"><Diamond size={26} /></div>
-        <div><span>SH MARKET ANALYZER V3.8</span><strong>Adaptive Diamond</strong></div>
+        <div><span>SH MARKET ANALYZER V3.8.5</span><strong>Adaptive Diamond</strong></div>
       </section>
 
       <section className="auth-panel">
@@ -309,7 +325,7 @@ export function AuthScreen({ recovery = false, onClose = null }) {
           {error && <div className="auth-feedback error" role="alert">{error}</div>}
           {message && <div className="auth-feedback success" role="status"><CheckCircle2 size={15} />{message}</div>}
 
-          <button className="auth-submit" type="submit" disabled={busy}>
+          <button className="auth-submit" type="submit" disabled={busy || (mode === 'reset' && auth.loading)}>
             {busy
               ? busyLabel
               : mode === 'login'
@@ -323,6 +339,12 @@ export function AuthScreen({ recovery = false, onClose = null }) {
                       : 'Update password'}
           </button>
         </form>
+
+        {mode === 'reset' && error && (
+          <button className="auth-back" type="button" onClick={() => changeMode('forgot')}>
+            <RotateCw size={14} /> Request a new recovery link
+          </button>
+        )}
 
         {verificationMode && (
           <div className="auth-resend-row">

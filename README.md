@@ -1,4 +1,4 @@
-# SH Market Analyzer V3.8.1
+# SH Market Analyzer V3.8.5
 
 ## V3.8 Adaptive Diamond Intelligence
 

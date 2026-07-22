@@ -41,7 +41,7 @@ class InstitutionalAnalysisEngineV4(ProAnalysisEngineV3):
             "version": "2.0.0",
             "engine_core_version": "V5",
             "engine_name": "Pro Analyze Engine V5 - Asset Intelligence",
-            "project_name": "SH Market Analyzer V3.8.1",
+            "project_name": "SH Market Analyzer V3.8.5",
         })
         if "score_engine" in result:
             result["smart_score_v2"] = result["score_engine"]

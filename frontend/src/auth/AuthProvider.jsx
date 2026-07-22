@@ -7,14 +7,13 @@ import {
   requireAuthProvider,
   supabase,
 } from './supabaseClient.js'
+import { clearRecoveryUrl, ensureRecoverySession, readRecoveryUrl } from './recoverySession.js'
 
 const AuthContext = createContext(null)
 
 function recoveryRequested() {
   if (typeof window === 'undefined') return false
-  const query = new URLSearchParams(window.location.search)
-  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-  return query.get('recovery') === '1' || query.get('type') === 'recovery' || hash.get('type') === 'recovery'
+  return readRecoveryUrl(window.location.href).requested
 }
 
 export function AuthProvider({ children }) {
@@ -22,6 +21,7 @@ export function AuthProvider({ children }) {
   const [accountProfile, setAccountProfile] = useState(null)
   const [loading, setLoading] = useState(authConfigured)
   const [passwordRecovery, setPasswordRecovery] = useState(recoveryRequested)
+  const [recoveryError, setRecoveryError] = useState(null)
   const [authDialogOpen, setAuthDialogOpen] = useState(false)
 
   useEffect(() => {
@@ -59,15 +59,36 @@ export function AuthProvider({ children }) {
       }
     }
 
-    supabase.auth.getSession().then(({ data, error }) => {
-      applySession(error ? null : data.session)
-    })
+    const initializeSession = async () => {
+      try {
+        if (recoveryRequested()) {
+          const recoveredSession = await ensureRecoverySession(supabase, window.location.href)
+          if (active) {
+            setPasswordRecovery(true)
+            setRecoveryError(null)
+          }
+          await applySession(recoveredSession)
+          return
+        }
+        const { data, error } = await supabase.auth.getSession()
+        await applySession(error ? null : data.session)
+      } catch (error) {
+        if (active) {
+          setRecoveryError(error)
+          setPasswordRecovery(true)
+        }
+        await applySession(null)
+      }
+    }
+
+    initializeSession()
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return
       applySession(nextSession)
       if (nextSession) setAuthDialogOpen(false)
       if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
+      if (event === 'PASSWORD_RECOVERY') setRecoveryError(null)
       if (event === 'SIGNED_OUT') setPasswordRecovery(false)
       setLoading(false)
     })
@@ -150,10 +171,15 @@ export function AuthProvider({ children }) {
     },
     async updatePassword(password) {
       if (!supabase) throw new Error('Account service is unavailable.')
+      await ensureRecoverySession(
+        supabase,
+        typeof window === 'undefined' ? '' : window.location.href,
+      )
       const { data, error } = await supabase.auth.updateUser({ password })
       if (error) throw error
       setPasswordRecovery(false)
-      if (typeof window !== 'undefined') window.history.replaceState({}, document.title, window.location.pathname)
+      setRecoveryError(null)
+      clearRecoveryUrl()
       return data
     },
     async signOut() {
@@ -180,10 +206,11 @@ export function AuthProvider({ children }) {
       appRole,
       isAdmin: appRole === 'admin',
       passwordRecovery,
+      recoveryError,
       authDialogOpen,
       ...actions,
     }
-  }, [accountProfile, actions, authDialogOpen, loading, passwordRecovery, session])
+  }, [accountProfile, actions, authDialogOpen, loading, passwordRecovery, recoveryError, session])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

@@ -95,7 +95,7 @@ def _windows_protect_secret(value: str) -> Optional[str]:
     kernel32 = ctypes.windll.kernel32
     if not crypt32.CryptProtectData(
         ctypes.byref(source),
-        "SH Market Analyzer OANDA credential",
+        "SH Market Analyzer private credential",
         None,
         None,
         None,
@@ -141,18 +141,21 @@ class ProviderSettings:
         self.settings_path = Path(settings_path)
         self._lock = threading.RLock()
         self._migrate_secret("oanda_api_token")
+        self._migrate_secret("telegram_bot_token")
 
     def get(self, name: str) -> str:
         env_name = {
             "goldapi_key": "GOLDAPI_KEY",
             "goldapi_io_key": "GOLDAPI_IO_KEY",
             "oanda_api_token": "OANDA_API_TOKEN",
+            "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+            "telegram_chat_id": "TELEGRAM_CHAT_ID",
         }.get(name, name.upper())
         value = os.getenv(env_name)
         if value:
             return value.strip()
         data = self._load()
-        if name == "oanda_api_token":
+        if name in {"oanda_api_token", "telegram_bot_token"}:
             protected = str(data.get(f"{name}_protected") or "").strip()
             if protected:
                 try:
@@ -169,10 +172,12 @@ class ProviderSettings:
                 "goldapi_io_key",
                 "twelve_data_api_key",
                 "oanda_api_token",
+                "telegram_bot_token",
+                "telegram_chat_id",
             ]:
                 value = str(values.get(key, "")).strip()
                 if value:
-                    if key == "oanda_api_token":
+                    if key in {"oanda_api_token", "telegram_bot_token"}:
                         self._store_secret(data, key, value)
                     else:
                         data[key] = value
@@ -185,6 +190,14 @@ class ProviderSettings:
                 data["data_mode"] = str(values.get("data_mode", "")).strip().upper()
             if "show_stale_history" in values:
                 data["show_stale_history"] = bool(values.get("show_stale_history"))
+            if "telegram_alerts_enabled" in values:
+                data["telegram_alerts_enabled"] = bool(values.get("telegram_alerts_enabled"))
+            if "telegram_connection_verified" in values:
+                data["telegram_connection_verified"] = bool(values.get("telegram_connection_verified"))
+            for key in ["telegram_verified_at", "telegram_bot_username"]:
+                value = str(values.get(key, "")).strip()
+                if value:
+                    data[key] = value
             self._write_unlocked(data)
         return self.masked_status()
 
@@ -225,10 +238,25 @@ class ProviderSettings:
             "oanda_environment": self.get("oanda_environment") or "practice",
             "oanda_credential_state": "VERIFIED" if token_saved and verified_at else "SAVED" if token_saved else "NOT_CONFIGURED",
             "oanda_verified_at": verified_at,
+            "telegram_bot_token": bool(self.get("telegram_bot_token")),
+            "telegram_chat_id": self._masked_chat_id(self.get("telegram_chat_id")),
+            "telegram_alerts_enabled": bool(self._load().get("telegram_alerts_enabled", False)),
+            "telegram_connection_verified": bool(self._load().get("telegram_connection_verified", False)),
+            "telegram_verified_at": self.get("telegram_verified_at") or None,
+            "telegram_bot_username": self.get("telegram_bot_username") or None,
             "test_mode_enabled": self.test_mode_enabled(),
             "data_mode": self.data_mode(),
             "show_stale_history": self.show_stale_history(),
         }
+
+    @staticmethod
+    def _masked_chat_id(value: str) -> Optional[str]:
+        chat_id = str(value or "").strip()
+        if not chat_id:
+            return None
+        if len(chat_id) <= 6:
+            return "*" * len(chat_id)
+        return f"{chat_id[:4]}...{chat_id[-3:]}"
 
     def set_test_mode(self, enabled: bool) -> Dict[str, bool]:
         with self._lock:

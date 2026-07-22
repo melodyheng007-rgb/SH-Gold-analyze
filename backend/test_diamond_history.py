@@ -22,6 +22,8 @@ def diamond_analysis(with_event: bool = False) -> dict:
         "origin_quality_score": 92,
         "origin_quality_grade": "A+",
         "entry_eligible_origin": True,
+        "strategy_confirmed_origin": True,
+        "display_as_diamond": True,
         "lifecycle": "FRESH",
         "execution_quality": "READY",
         "rejection_status": "STRONG",
@@ -156,6 +158,8 @@ class DiamondHistoryTests(unittest.TestCase):
         analysis = diamond_analysis(False)
         zone = analysis["key_zones"]["zones"][0]
         zone["entry_eligible_origin"] = False
+        zone["strategy_confirmed_origin"] = False
+        zone["display_as_diamond"] = False
         zone["origin_model"] = "EXPANSION_CONTEXT"
         self.history.record(analysis, "5M")
 
@@ -163,6 +167,24 @@ class DiamondHistoryTests(unittest.TestCase):
         self.assertEqual(entry["classification"], "CONTEXT")
         self.assertEqual(entry["verification_status"], "NOT_AN_ENTRY")
         self.assertEqual(self.history.stats("XAUUSD")["confirmed"], 0)
+
+    def test_score_only_context_is_saved_for_audit_but_never_marked_visible(self):
+        analysis = diamond_analysis(False)
+        zone = analysis["key_zones"]["zones"][0]
+        zone.update(
+            strategy_confirmed_origin=False,
+            display_as_diamond=False,
+            entry_eligible_origin=False,
+            diamond_score=99,
+            diamond_grade="A+",
+        )
+
+        self.history.record(analysis, "5M")
+        entry = self.history.list("XAUUSD", 10)[0]
+
+        self.assertEqual(entry["classification"], "CONTEXT")
+        self.assertFalse(entry["strategy_confirmed_origin"])
+        self.assertFalse(entry["ever_visible"])
 
     def test_invalidated_qualified_zone_is_exposed_as_rejected_audit_context(self):
         self.history.record(diamond_analysis(False), "5M")

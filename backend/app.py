@@ -25,12 +25,17 @@ from engine.diamond_validation import DiamondValidationLab, ENGINE_VERSION as DI
 from engine.session_framework import SessionFramework
 from engine.key_zone import DiamondZoneEngine
 from engine.diamond_auto_entry import DiamondAutoEntryEngine
+from engine.smr_model import SMRModelEngine
+from engine.smt_model import SMTModelEngine
+from engine.smt_companion import SMTCompanionFeedService
+from engine.diamond_timeframe_model import DiamondTimeframeFusionEngine
 from engine.news_intelligence import EconomicNewsIntelligence
 from engine.strategy_governance import CHALLENGER_VERSION, StrategyGovernance
 from engine.execution_reality import ExecutionRealityEngine, FeedReconciliationEngine
 from engine.decision_quality import DecisionQualityEngine
 from engine.market_regime import MarketRegimeEngine
 from engine.signal_alerts import ClosedCandleAlerts
+from engine.telegram_alerts import TelegramDiamondAlerts
 from engine.xau_confluence import XAUPrecisionConfluenceEngine
 from engine.data_integrity import DataIntegrityEngine
 from engine.data_loader import candles_to_records
@@ -81,8 +86,8 @@ from engine.xauusd_provider import (
     normalize_timeframe,
 )
 
-APP_VERSION = "3.8.1"
-APP_VERSION_LABEL = "V3.8.1"
+APP_VERSION = "3.8.5"
+APP_VERSION_LABEL = "V3.8.5"
 APP_DESCRIPTION = "Diamond Discovery Trading OS"
 MARKET_VISUAL_SYMBOLS = {
     "XAUUSD": "OANDA:XAUUSD",
@@ -176,11 +181,15 @@ diamond_challenger_engine = DiamondZoneEngine(
 diamond_validation_lab = DiamondValidationLab(ANALYSIS_JOURNAL_DB, diamond_zone_engine)
 strategy_governance = StrategyGovernance(ANALYSIS_JOURNAL_DB)
 diamond_auto_entry_engine = DiamondAutoEntryEngine()
+smr_model_engine = SMRModelEngine()
+smt_model_engine = SMTModelEngine()
+diamond_timeframe_engine = DiamondTimeframeFusionEngine()
 feed_reconciliation_engine = FeedReconciliationEngine()
 execution_reality_engine = ExecutionRealityEngine()
 decision_quality_engine = DecisionQualityEngine()
 market_regime_engine = MarketRegimeEngine()
 closed_candle_alerts = ClosedCandleAlerts(ANALYSIS_JOURNAL_DB)
+telegram_diamond_alerts = TelegramDiamondAlerts(ANALYSIS_JOURNAL_DB, settings)
 news_intelligence_engine = EconomicNewsIntelligence()
 xau_precision_engine = XAUPrecisionConfluenceEngine()
 candle_store = SQLiteCandleStore(SQLITE_DB)
@@ -230,6 +239,7 @@ btc_twelve_data_history = TwelveDataHistoryService(
     provider_name="Twelve Data BTC/USD OHLC",
 )
 binance_history = BinanceHistoryService(btc_candle_store)
+smt_companion_service = SMTCompanionFeedService(settings, candle_store, btc_candle_store)
 btc_institutional_engine_v4 = InstitutionalAnalysisEngineV4(
     btc_candle_store,
     btc_engine_core.cache,
@@ -285,6 +295,12 @@ class DiamondValidationPayload(BaseModel):
     horizon_bars: Optional[int] = None
     refresh_market: bool = True
     force: bool = False
+
+
+class TelegramAlertSettingsPayload(BaseModel):
+    bot_token: Optional[str] = None
+    chat_id: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 @app.get("/")
@@ -416,6 +432,9 @@ def api_health():
         "app": "SH Market Analyzer",
         "version": APP_VERSION_LABEL,
         "diamond_zone_engine": diamond_zone_engine.engine_version,
+        "smr_model_engine": smr_model_engine.VERSION,
+        "smt_model_engine": smt_model_engine.VERSION,
+        "diamond_timeframe_engine": diamond_timeframe_engine.VERSION,
         "diamond_validation_engine": DIAMOND_VALIDATION_ENGINE_VERSION,
         "diamond_challenger_engine": CHALLENGER_VERSION,
         "decision_quality_engine": decision_quality_engine.VERSION,
@@ -1421,17 +1440,29 @@ def market_signal_view(
         }
         integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
         locked = _locked_market_data_mode(normalized)
-        chart = integrity_engine.chart_data(tf, limit)
-        chart.pop("frames", None)
+        bundle = integrity_engine.chart_bundle(tf, limit)
+        chart = bundle["chart_data"]
         chart["symbol"] = normalized
-        overlays = integrity_engine.overlays(tf, min(limit, 1000))
+        overlays = bundle["overlays"]
         overlays["symbol"] = normalized
-        panels = _verifiable_indicator_panels(integrity_engine, normalized, tf, min(limit, 1000), locked)
+        panels = _verifiable_indicator_panels(
+            integrity_engine,
+            normalized,
+            tf,
+            min(limit, 1000),
+            locked,
+            precomputed=bundle["panels"],
+        )
         analysis = _market_analysis(normalized, engine_core.get_mode())
         chart_source = chart.get("data_integrity", {}).get("chart_source") or sync.get("source")
         session = _market_session_framework(normalized, tf)
         analysis["session_framework"] = session
+        news_intelligence = news_intelligence_engine.snapshot(normalized)
+        analysis["news_intelligence"] = news_intelligence
         key_zones = _market_key_zones(normalized, tf, chart, analysis, session, style)
+        analysis["smr_model"] = key_zones.get("smr_model")
+        analysis["smt_model"] = key_zones.get("smt_model")
+        analysis["diamond_timeframe_model"] = key_zones.get("diamond_timeframe_model")
         challenger_snapshot = key_zones.pop("challenger_snapshot", {})
         strategy_governance.record(
             normalized,
@@ -1456,7 +1487,6 @@ def market_signal_view(
             expected_source,
             sync,
         )
-        news_intelligence = news_intelligence_engine.snapshot(normalized)
         provider_alignment = _provider_alignment(normalized, chart_source, sync)
         analysis["provider_alignment"] = provider_alignment
         analysis["trust_gate"] = _market_trust_gate(normalized, provider_alignment)
@@ -1471,11 +1501,21 @@ def market_signal_view(
             (analysis.get("trade_plan") or {}).get("direction")
             or (analysis.get("signal") or {}).get("direction"),
         )
+        diamond_auto_entry_engine.apply(
+            analysis,
+            key_zones,
+            session,
+            news_intelligence,
+        )
         execution_reality = execution_reality_engine.evaluate(analysis, analysis["feed_reconciliation"])
         execution_reality_engine.apply_to_analysis(analysis, execution_reality)
         decision_quality = decision_quality_engine.evaluate(analysis, champion_validation)
         decision_quality_engine.apply_to_analysis(analysis, decision_quality)
         analysis["closed_candle_alert"] = closed_candle_alerts.record(analysis, tf)
+        analysis["telegram_alert"] = telegram_diamond_alerts.enqueue(
+            analysis["closed_candle_alert"],
+            analysis,
+        )
         diamond_history.record(analysis, tf)
         return {
             "status": "OK",
@@ -1516,9 +1556,10 @@ def market_chart_snapshot(
         normalized = _normalize_market_symbol(symbol)
         tf = normalize_timeframe(timeframe)
         integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
-        chart = integrity_engine.chart_data(tf, limit)
-        chart.pop("frames", None)
+        bundle = integrity_engine.chart_bundle(tf, limit)
+        chart = bundle["chart_data"]
         chart["symbol"] = normalized
+        bundle["overlays"]["symbol"] = normalized
         source = chart.get("data_integrity", {}).get("chart_source")
         alignment = _provider_alignment(normalized, source)
         panels = _verifiable_indicator_panels(
@@ -1527,6 +1568,7 @@ def market_chart_snapshot(
             tf,
             min(limit, 300),
             _locked_market_data_mode(normalized),
+            precomputed=bundle["panels"],
         )
         return {
             "status": "CACHED_SNAPSHOT",
@@ -1534,7 +1576,7 @@ def market_chart_snapshot(
             "visual_symbol": _market_visual_symbol(normalized),
             "timeframe": tf,
             "chart_data": chart,
-            "overlays": {"status": "REFRESHING", "symbol": normalized, "overlays": {}, "overlay_status": {}},
+            "overlays": bundle["overlays"],
             "panels": panels,
             "provider_alignment": alignment,
             "history_provenance": {
@@ -1925,6 +1967,41 @@ def market_closed_candle_alerts(
         return closed_candle_alerts.list(normalized, limit, unread_only)
     except Exception as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.get("/api/alerts/telegram-settings")
+def telegram_alert_settings():
+    return {"ok": True, "telegram": telegram_diamond_alerts.status()}
+
+
+@app.post("/api/alerts/telegram-settings")
+def save_telegram_alert_settings(payload: TelegramAlertSettingsPayload):
+    result = telegram_diamond_alerts.configure(
+        payload.bot_token,
+        payload.chat_id,
+        payload.enabled,
+    )
+    if payload.enabled and result.get("status") == "NEEDS_CONFIGURATION":
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "status": result.get("status"), "message": "Bot token and group chat ID are required."},
+        )
+    return {"ok": True, "telegram": result, "message": "Telegram alert settings saved."}
+
+
+@app.post("/api/alerts/telegram-test")
+def test_telegram_alert(payload: TelegramAlertSettingsPayload):
+    result = telegram_diamond_alerts.send_test(payload.bot_token, payload.chat_id)
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content=result)
+    saved = telegram_diamond_alerts.configure(
+        payload.bot_token,
+        payload.chat_id,
+        True if payload.enabled is None else payload.enabled,
+        verified=True,
+        bot_username=result.get("bot_username"),
+    )
+    return result | {"telegram": saved}
 
 
 @app.post("/api/market/alerts/{alert_id}/acknowledge")
@@ -2552,8 +2629,9 @@ def _verifiable_indicator_panels(
     timeframe: str,
     limit: int,
     locked: Dict[str, Any],
+    precomputed: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    panels = integrity_engine.indicator_panels(timeframe, limit)
+    panels = precomputed or integrity_engine.indicator_panels(timeframe, limit)
     panels["symbol"] = symbol
     base = panels.get("indicator_panels") or {}
     panels["indicator_panels"] = {
@@ -2563,6 +2641,11 @@ def _verifiable_indicator_panels(
         "indicator_snapshot": base.get("indicator_snapshot") or {
             "status": "WAITING",
             "source": "CLOSED_PROVIDER_CANDLES",
+        },
+        "indicator_readiness": base.get("indicator_readiness") or panels.get("readiness") or {
+            "status": "WAITING",
+            "required_closed_candles": 35,
+            "independent_from_full_analysis": True,
         },
         "market_pressure_score": base.get(
             "market_pressure_score",
@@ -2667,6 +2750,9 @@ def _market_analysis_payload(analysis: Dict[str, Any]) -> Dict[str, Any]:
         "trust_gate": analysis.get("trust_gate"),
         "session_framework": analysis.get("session_framework"),
         "key_zones": analysis.get("key_zones"),
+        "smr_model": analysis.get("smr_model") or (analysis.get("key_zones") or {}).get("smr_model"),
+        "smt_model": analysis.get("smt_model") or (analysis.get("key_zones") or {}).get("smt_model"),
+        "diamond_timeframe_model": analysis.get("diamond_timeframe_model") or (analysis.get("key_zones") or {}).get("diamond_timeframe_model"),
         "news_intelligence": analysis.get("news_intelligence"),
         "xau_confluence": analysis.get("xau_confluence"),
         "diamond_auto_entry": analysis.get("diamond_auto_entry"),
@@ -2726,6 +2812,9 @@ def _build_market_analysis_v4(
         session=result["session_framework"],
         trading_style=style,
     )
+    result["smr_model"] = result["key_zones"].get("smr_model")
+    result["smt_model"] = result["key_zones"].get("smt_model")
+    result["diamond_timeframe_model"] = result["key_zones"].get("diamond_timeframe_model")
     governance_chart = (
         data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
     ).chart_data(selected_timeframe, 500)
@@ -2781,6 +2870,10 @@ def _build_market_analysis_v4(
     decision_quality = decision_quality_engine.evaluate(result, champion_validation)
     decision_quality_engine.apply_to_analysis(result, decision_quality)
     result["closed_candle_alert"] = closed_candle_alerts.record(result, normalize_timeframe(selected_timeframe))
+    result["telegram_alert"] = telegram_diamond_alerts.enqueue(
+        result["closed_candle_alert"],
+        result,
+    )
     result["analysis_data_rule"] = (
         f"TradingView is the visual chart. Analysis uses freshly synced real {normalized} OHLC history "
         "from the backend market-data provider before running the setup engine."
@@ -2795,6 +2888,7 @@ def _build_market_analysis_v4(
         "trading_style": style,
         "execution_timeframe": result["key_zones"].get("execution_timeframe"),
         "confirmation_timeframe": result["key_zones"].get("confirmation_timeframe"),
+        "structure_timeframe": result["key_zones"].get("structure_timeframe"),
     }
     journal_entry = analysis_journal.record(result, selected_timeframe)
     result["journal_entry"] = journal_entry
@@ -3026,9 +3120,16 @@ def _market_key_zones(
     style = _normalize_trading_style(trading_style)
     style_profile = diamond_zone_engine.trading_style_profile(style)
     required_timeframes = list(style_profile["weights"])
+    smr_profile = smr_model_engine.PROFILES[style]
+    smr_timeframes = {
+        smr_profile["structure_timeframe"],
+        smr_profile["context_timeframe"],
+        smr_profile["execution_timeframe"],
+    }
     integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
     expected_source = _expected_market_source(normalized)
     generated_at = pd.Timestamp.now(tz="UTC").isoformat()
+    analysis_context = dict(analysis or {})
 
     def calculate_timeframe(zone_timeframe: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         chart_payload = payload or integrity_engine.chart_data(zone_timeframe, 260)
@@ -3038,7 +3139,7 @@ def _market_key_zones(
             zone_timeframe,
             source,
             session or {},
-            analysis or {},
+            analysis_context,
             normalized,
             style,
         )
@@ -3051,6 +3152,7 @@ def _market_key_zones(
         zone_result["profile_label"] = style_profile["label"]
         zone_result["execution_timeframe"] = style_profile["execution_timeframe"]
         zone_result["confirmation_timeframe"] = style_profile["confirmation_timeframe"]
+        zone_result["structure_timeframe"] = style_profile["structure_timeframe"]
         zone_result["required_timeframes"] = required_timeframes
         zone_result["timeframe_role"] = (
             "EXECUTION" if zone_timeframe == style_profile["execution_timeframe"]
@@ -3065,13 +3167,27 @@ def _market_key_zones(
         return zone_result
 
     selected_chart = chart or integrity_engine.chart_data(tf, 500)
+    chart_payloads: Dict[str, Dict[str, Any]] = {tf: selected_chart}
+
+    def timeframe_payload(zone_timeframe: str) -> Dict[str, Any]:
+        if zone_timeframe not in chart_payloads:
+            chart_payloads[zone_timeframe] = integrity_engine.chart_data(zone_timeframe, 500)
+        return chart_payloads[zone_timeframe]
+
+    fusion_profile = diamond_timeframe_engine.PROFILES[style]
+    smt_timeframe = fusion_profile["execution_timeframe"]
+    smt_primary = timeframe_payload(smt_timeframe).get("candles") or []
+    smt_companion = smt_companion_service.snapshot(normalized, smt_timeframe)
+    smt_model = smt_model_engine.evaluate(normalized, smt_timeframe, smt_primary, smt_companion)
+    analysis_context["smt_model"] = smt_model
+
     result = calculate_timeframe(tf, selected_chart)
     challenger = diamond_challenger_engine.calculate(
         selected_chart.get("candles") or [],
         tf,
         selected_chart.get("data_integrity", {}).get("chart_source"),
         session or {},
-        analysis or {},
+        analysis_context,
         normalized,
         style,
     )
@@ -3098,12 +3214,60 @@ def _market_key_zones(
     timeframe_results: Dict[str, Dict[str, Any]] = {}
     for zone_timeframe in required_timeframes:
         timeframe_results[zone_timeframe] = (
-            result if zone_timeframe == tf else calculate_timeframe(zone_timeframe)
+            result if zone_timeframe == tf else calculate_timeframe(zone_timeframe, timeframe_payload(zone_timeframe))
         )
     mtf_confluence = diamond_zone_engine.combine_timeframes(timeframe_results, style)
     result["mtf_confluence"] = mtf_confluence
     result["mtf_state"] = mtf_confluence.get("state")
     result["mtf_risk_filter"] = mtf_confluence.get("risk_filter")
+    smr_frames = {
+        zone_timeframe: timeframe_payload(zone_timeframe).get("candles") or []
+        for zone_timeframe in smr_timeframes
+    }
+    smr_model = smr_model_engine.evaluate(normalized, style, smr_frames, session or {})
+    smr_sources = {
+        zone_timeframe: timeframe_payload(zone_timeframe).get("data_integrity", {}).get("chart_source")
+        for zone_timeframe in smr_timeframes
+    }
+    smr_model["sources"] = smr_sources
+    smr_model["feed_matched"] = bool(smr_sources) and all(source == expected_source for source in smr_sources.values())
+    if not smr_model["feed_matched"]:
+        smr_model["execution_gate"] = "WAIT_DATA"
+        smr_model["next_trigger"] = "SMR timing waits until every profile timeframe uses the matched market feed."
+    smr_model_engine.apply_to_key_zones(result, smr_model)
+    smt_model_engine.apply_to_key_zones(result, smt_model)
+    fusion_timeframes = {
+        fusion_profile["execution_timeframe"],
+        fusion_profile["context_timeframe"],
+        fusion_profile["anchor_timeframe"],
+    }
+    fusion_frames = {
+        zone_timeframe: timeframe_payload(zone_timeframe).get("candles") or []
+        for zone_timeframe in fusion_timeframes
+    }
+    fusion_model = diamond_timeframe_engine.evaluate(
+        normalized,
+        style,
+        fusion_frames,
+        result,
+        analysis_context,
+        session or {},
+        smr_model,
+        smt_model,
+    )
+    fusion_sources = {
+        zone_timeframe: timeframe_payload(zone_timeframe).get("data_integrity", {}).get("chart_source")
+        for zone_timeframe in fusion_timeframes
+    }
+    fusion_model["sources"] = fusion_sources
+    fusion_model["feed_matched"] = bool(fusion_sources) and all(
+        source == expected_source for source in fusion_sources.values()
+    )
+    if not fusion_model["feed_matched"]:
+        fusion_model["state"] = "DATA_WAIT"
+        fusion_model["execution_gate"] = "WAIT_DATA"
+        fusion_model["next_trigger"] = "Dual-Core validation waits until 5M/1H profile history uses the matched market feed."
+    diamond_timeframe_engine.apply_to_key_zones(result, fusion_model)
     return result
 
 

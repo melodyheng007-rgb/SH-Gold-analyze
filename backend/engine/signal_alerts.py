@@ -62,9 +62,11 @@ class ClosedCandleAlerts:
         auto_entry = analysis.get("diamond_auto_entry") or {}
         execution = analysis.get("execution_reality") or {}
         news = analysis.get("news_intelligence") or {}
+        primary = zones.get("primary_zone") or {}
         confirmed = bool(
             zones.get("entry_event_status") == "CONFIRMED_ENTRY"
             and decision_quality.get("current_event") is True
+            and str(primary.get("smt_execution_gate") or "NEUTRAL").upper() != "BLOCK_CONFLICT"
         )
         event = zones.get("latest_entry_event") or {}
         transition = "CONFIRMED"
@@ -132,7 +134,7 @@ class ClosedCandleAlerts:
         now = datetime.now(timezone.utc).isoformat()
         event_key = f"{symbol}:{normalized_timeframe}:{event_id}:{transition}"
         with self._lock, closing(self.connect()) as connection, connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO closed_candle_alerts (
                     event_key, symbol, timeframe, event_time, kind, priority, side,
@@ -161,7 +163,11 @@ class ClosedCandleAlerts:
                 "SELECT * FROM closed_candle_alerts WHERE event_key = ?",
                 (event_key,),
             ).fetchone()
-        return self._public(row) if row else None
+        if not row:
+            return None
+        result = self._public(row)
+        result["is_new"] = cursor.rowcount == 1
+        return result
 
     def list(self, symbol: str, limit: int = 20, unacknowledged_only: bool = False) -> Dict[str, Any]:
         normalized_symbol = str(symbol or "XAUUSD").upper()

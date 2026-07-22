@@ -410,6 +410,16 @@ class DataIntegrityEngine:
     def chart_data(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
         return self._build(timeframe, limit)
 
+    def chart_bundle(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
+        """Build chart, overlays, and indicators from one matched candle frame."""
+        built = self._build(timeframe, limit)
+        chart = {key: value for key, value in built.items() if key != "frames"}
+        return {
+            "chart_data": chart,
+            "overlays": self._overlays_from_built(built),
+            "panels": self._indicator_panels_from_built(built),
+        }
+
     def history_alignment(self, timeframe: str = "15M", limit: int = 1000) -> Dict[str, Any]:
         return self.alignment.check(timeframe, limit)
 
@@ -493,6 +503,9 @@ class DataIntegrityEngine:
 
     def overlays(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
         built = self._build(timeframe, limit)
+        return self._overlays_from_built(built)
+
+    def _overlays_from_built(self, built: Dict[str, Any]) -> Dict[str, Any]:
         df = built["frames"]["analysis"]
         levels = self._overlay_levels(df, built)
         return {
@@ -507,65 +520,67 @@ class DataIntegrityEngine:
 
     def indicator_panels(self, timeframe: str = "15M", limit: int = 300) -> Dict[str, Any]:
         built = self._build(timeframe, limit)
+        return self._indicator_panels_from_built(built)
+
+    def _indicator_panels_from_built(self, built: Dict[str, Any]) -> Dict[str, Any]:
         df = built["frames"]["analysis"]
         if not df.empty and "is_complete" in df.columns:
             complete = pd.to_numeric(df["is_complete"], errors="coerce").fillna(0) == 1
             if "is_partial" in df.columns:
                 complete &= pd.to_numeric(df["is_partial"], errors="coerce").fillna(0) == 0
             df = df.loc[complete].copy()
+        available_candles = len(df)
+        chart_source = built["data_integrity"].get("chart_source")
+
+        def readiness(status: str, reason: str) -> Dict[str, Any]:
+            return {
+                "status": status,
+                "reason": reason,
+                "available_closed_candles": available_candles,
+                "required_closed_candles": 35,
+                "source": chart_source,
+                "uses_cached_matched_history": bool(chart_source),
+                "independent_from_full_analysis": True,
+            }
+
+        def waiting_response(status: str, message: str, reason: str) -> Dict[str, Any]:
+            indicator_readiness = readiness("WAITING", reason)
+            return {
+                "symbol": "XAUUSD",
+                "timeframe": built["timeframe"],
+                "status": status,
+                "message": message,
+                "readiness": indicator_readiness,
+                "indicator_panels": {
+                    "boys_selling": [],
+                    "bearishness": [],
+                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
+                    "indicator_readiness": indicator_readiness,
+                    "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
+                },
+                "data_integrity": built["data_integrity"],
+            }
+
         data_mode = built["data_integrity"].get("data_mode")
         if data_mode == "GAP_WARNING":
-            return {
-                "symbol": "XAUUSD",
-                "timeframe": built["timeframe"],
-                "status": "FIX_GAP_REQUIRED",
-                "message": "Fix gap required",
-                "indicator_panels": {
-                    "boys_selling": [],
-                    "bearishness": [],
-                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
-                    "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
-                },
-                "data_integrity": built["data_integrity"],
-            }
+            return waiting_response("FIX_GAP_REQUIRED", "Fix gap required", "DATA_GAP")
         if data_mode == "LIVE_ONLY":
-            return {
-                "symbol": "XAUUSD",
-                "timeframe": built["timeframe"],
-                "status": "WAITING_FOR_HISTORY",
-                "message": "Waiting for candle history",
-                "indicator_panels": {
-                    "boys_selling": [],
-                    "bearishness": [],
-                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
-                    "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
-                },
-                "data_integrity": built["data_integrity"],
-            }
+            return waiting_response("WAITING_FOR_HISTORY", "Waiting for candle history", "LIVE_ONLY")
         if df.empty or len(df) < 35:
-            return {
-                "symbol": "XAUUSD",
-                "timeframe": built["timeframe"],
-                "status": "WAITING_FOR_HISTORY",
-                "message": "Waiting for candle history",
-                "indicator_panels": {
-                    "boys_selling": [],
-                    "bearishness": [],
-                    "indicator_snapshot": {"status": "WAITING", "source": "CLOSED_PROVIDER_CANDLES"},
-                    "market_pressure_score": {"bullish": 0, "bearish": 0, "neutral": 100},
-                },
-                "data_integrity": built["data_integrity"],
-            }
+            return waiting_response("WAITING_FOR_HISTORY", "Waiting for candle history", "INSUFFICIENT_CLOSED_CANDLES")
         boys_selling, bearishness, pressure = self._indicator_data(df)
+        indicator_readiness = readiness("READY", "CACHED_MATCHED_HISTORY_READY")
         return {
             "symbol": "XAUUSD",
             "timeframe": built["timeframe"],
             "status": "NO_CANDLES" if df.empty else "READY",
             "badge": "TEST DATA" if built["data_integrity"].get("test_data_present") else None,
+            "readiness": indicator_readiness,
             "indicator_panels": {
                 "boys_selling": boys_selling,
                 "bearishness": bearishness,
                 "indicator_snapshot": self._indicator_snapshot(boys_selling, bearishness),
+                "indicator_readiness": indicator_readiness,
                 "market_pressure_score": pressure,
                 "engine_version": "MOMENTUM_V2_CLOSED_CANDLE",
             },

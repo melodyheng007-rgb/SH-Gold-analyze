@@ -1,5 +1,5 @@
-const CACHE_KEY = 'sh_market_chart_bootstrap_v1'
-const CACHE_VERSION = 1
+const CACHE_KEY = 'sh_market_chart_bootstrap_v2'
+const CACHE_VERSION = 2
 const DEFAULT_MAX_AGE_MS = 12 * 60 * 60 * 1000
 const MIN_HISTORY_CANDLES = 30
 
@@ -15,6 +15,12 @@ function chartCandles(chartData) {
   const active = chartData?.segments?.active
   if (Array.isArray(active) && active.length) return active
   return Array.isArray(chartData?.candles) ? chartData.candles : []
+}
+
+export function isIndicatorSnapshotReady(panelState) {
+  return panelState?.status === 'READY'
+    || panelState?.readiness?.status === 'READY'
+    || panelState?.indicator_panels?.indicator_snapshot?.status === 'READY'
 }
 
 export function createChartSnapshotRecord(result, asset, timeframe, now = Date.now()) {
@@ -52,7 +58,17 @@ export function writeChartSnapshot(storage, result, asset, timeframe, now = Date
   const record = createChartSnapshotRecord(result, asset, timeframe, now)
   if (!record) return false
   try {
-    storage.setItem(CACHE_KEY, JSON.stringify(record))
+    const current = JSON.parse(storage.getItem(CACHE_KEY) || 'null')
+    const records = current?.version === CACHE_VERSION && current?.records && typeof current.records === 'object'
+      ? { ...current.records }
+      : {}
+    records[`${record.asset}:${record.timeframe}`] = record
+    const pruned = Object.fromEntries(
+      Object.entries(records)
+        .sort(([, left], [, right]) => Number(right?.saved_at || 0) - Number(left?.saved_at || 0))
+        .slice(0, 12),
+    )
+    storage.setItem(CACHE_KEY, JSON.stringify({ version: CACHE_VERSION, records: pruned }))
     return true
   } catch (_) {
     return false
@@ -64,7 +80,10 @@ export function readChartSnapshot(storage, asset, timeframe, options = {}) {
   const now = Number(options.now ?? Date.now())
   const maxAgeMs = Number(options.maxAgeMs ?? DEFAULT_MAX_AGE_MS)
   try {
-    const record = JSON.parse(storage.getItem(CACHE_KEY) || 'null')
+    const container = JSON.parse(storage.getItem(CACHE_KEY) || 'null')
+    const record = container?.version === CACHE_VERSION
+      ? container?.records?.[`${normalizedAsset(asset)}:${normalizedTimeframe(timeframe)}`]
+      : null
     if (record?.version !== CACHE_VERSION) return null
     if (normalizedAsset(record.asset) !== normalizedAsset(asset)) return null
     if (normalizedTimeframe(record.timeframe) !== normalizedTimeframe(timeframe)) return null

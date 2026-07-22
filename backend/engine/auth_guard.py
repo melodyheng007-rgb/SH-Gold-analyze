@@ -66,6 +66,8 @@ class SupabaseAuthGuard:
         "/api/xauusd/real-mode-wizard",
         "/api/xauusd/reset-database",
         "/api/market/diamond-validation/run",
+        "/api/alerts/telegram-settings",
+        "/api/alerts/telegram-test",
     }
 
     def __init__(self) -> None:

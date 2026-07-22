@@ -2244,6 +2244,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   color: #cbd5e1;
   background: #0a1018;
 }
+.proof-dock-stack {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+}
 .diamond-validation > header {
   display: grid;
   grid-template-columns: auto minmax(140px, 1fr) auto auto;
@@ -2992,7 +2997,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 }
 .diamond-zone-metrics {
   display: grid;
-  grid-template-columns: .65fr .9fr .8fr 1.35fr .9fr;
+  grid-template-columns: .55fr .8fr .75fr 1.15fr 1.25fr .8fr;
   min-width: 0;
 }
 .diamond-zone-metrics p {
@@ -6166,6 +6171,64 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .provider-verification.good strong { color: #4ade80; }
 .provider-verification.bad { border-color: #6b3030; }
 .provider-verification.bad strong { color: #ff8a80; }
+.provider-config-form .telegram-enable-row {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  border: 1px solid #34383f;
+  border-radius: 5px;
+  background: #101215;
+}
+.provider-config-form .telegram-enable-row input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  accent-color: #e2c45f;
+}
+.telegram-credential-fields {
+  display: grid;
+  gap: 9px;
+}
+.telegram-connection-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.telegram-replace-button {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #34383f;
+  border-radius: 5px;
+  color: #cbd5e1;
+  background: #171a1f;
+  font-size: 10px;
+  font-weight: 850;
+}
+.telegram-replace-button:hover {
+  border-color: #4b5563;
+  color: #f3f4f6;
+}
+.telegram-enable-row > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.telegram-enable-row strong {
+  color: #e5e7eb;
+  font-size: 10px;
+}
+.telegram-enable-row small {
+  color: #777c85;
+  font-size: 9px;
+  line-height: 1.35;
+}
+@media (max-width: 520px) {
+  .telegram-connection-actions {
+    grid-template-columns: 1fr;
+  }
+}
 .provider-config-form p { margin: 0; }
 .drawer-button {
   min-height: 34px;
@@ -6876,10 +6939,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .diamond-zone-metrics p { padding: 6px 7px; }
   .news-risk-metrics p:nth-child(2n),
   .diamond-zone-metrics p:nth-child(2n) { border-right: 0; }
-  .news-risk-metrics p:last-child,
-  .diamond-zone-metrics p:last-child {
+  .news-risk-metrics p:last-child {
     grid-column: 1 / -1;
     border-top: 1px solid #202a38;
+  }
+  .diamond-zone-metrics p:last-child {
+    grid-column: auto;
+    border-top: 0;
   }
   .session-market-stack > .session-framework { border-right: 0; border-bottom: 1px solid #273244; }
   .session-market-stack > .mtf-market-map { grid-template-columns: 1fr; }

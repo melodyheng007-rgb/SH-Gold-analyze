@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="km">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SH Indicator Panel Guide</title>
+  <style>
+    @font-face {
+      font-family: "Khmer Guide";
+      src: url("file:///C:/Windows/Fonts/KhmerOSbattambang.ttf") format("truetype");
+    }
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    :root {
+      --ink: #0a1424;
+      --panel: #101c2f;
+      --line: #263750;
+      --muted: #65748a;
+      --paper: #f5f7fa;
+      --gold: #e7c953;
+      --cyan: #20c7e8;
+      --green: #20c86b;
+      --red: #f04f48;
+      --orange: #ed812c;
+      --blue: #308ff3;
+    }
+    body {
+      margin: 0;
+      background: #ccd2da;
+      color: var(--ink);
+      font-family: "Khmer Guide", Arial, sans-serif;
+      font-size: 10.4pt;
+      line-height: 1.55;
+    }
+    .page {
+      position: relative;
+      width: 210mm;
+      height: 297mm;
+      padding: 13mm 14mm 12mm;
+      overflow: hidden;
+      background: var(--paper);
+      page-break-after: always;
+    }
+    .page:last-child { page-break-after: auto; }
+    .dark { background: #080f1c; color: #edf3fb; }
+    .page-no {
+      position: absolute;
+      right: 14mm;
+      bottom: 7mm;
+      color: #8592a5;
+      font: 700 8pt Arial, sans-serif;
+    }
+    .eyebrow {
+      color: var(--cyan);
+      font: 700 8pt Arial, sans-serif;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 28pt; line-height: 1.18; margin-bottom: 5mm; }
+    h2 { font-size: 20pt; line-height: 1.25; margin-bottom: 4mm; }
+    h3 { font-size: 12.5pt; line-height: 1.35; margin-bottom: 2mm; }
+    p { margin-bottom: 3mm; }
+    .muted { color: var(--muted); }
+    .dark .muted { color: #98a6b8; }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 4mm;
+      margin-bottom: 17mm;
+    }
+    .brand-mark {
+      width: 13mm;
+      height: 13mm;
+      border: 1.5px solid var(--cyan);
+      border-radius: 2mm;
+      display: grid;
+      place-items: center;
+      background: rgba(32,199,232,.08);
+    }
+    .diamond {
+      width: 6.5mm;
+      height: 6.5mm;
+      border: 1.6px solid var(--cyan);
+      transform: rotate(45deg);
+      border-radius: 1mm;
+    }
+    .brand-copy span { display: block; color: #93a0b1; font: 700 7pt Arial, sans-serif; letter-spacing: .8px; }
+    .brand-copy strong { color: var(--gold); font-size: 15pt; }
+    .cover-grid {
+      display: grid;
+      grid-template-columns: 1.3fr .7fr;
+      gap: 9mm;
+      align-items: end;
+      margin-top: 20mm;
+    }
+    .cover-rule { width: 28mm; height: 1.2mm; background: var(--gold); margin: 7mm 0; }
+    .cover-meta {
+      border-left: 1px solid #33445b;
+      padding-left: 6mm;
+      color: #aab4c2;
+    }
+    .cover-meta b { display: block; color: #fff; margin-bottom: 1mm; }
+    .core-rule {
+      margin-top: 20mm;
+      padding: 6mm;
+      border: 1px solid #31435c;
+      border-left: 2mm solid var(--gold);
+      background: #0e192a;
+      border-radius: 2mm;
+    }
+    .core-rule strong { color: var(--gold); }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      border-bottom: 1px solid #d3dae4;
+      padding-bottom: 3mm;
+      margin-bottom: 6mm;
+    }
+    .dark .section-head { border-color: #2b3c54; }
+    .section-head p { margin: 0; color: var(--muted); font-size: 8.5pt; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; }
+    .card {
+      padding: 4.5mm;
+      border: 1px solid #d3dae4;
+      border-radius: 2mm;
+      background: #fff;
+    }
+    .dark .card { background: #0d1828; border-color: #2b3c54; }
+    .card.accent { border-top: 1.5mm solid var(--gold); }
+    .card.cyan { border-top: 1.5mm solid var(--cyan); }
+    .card.orange { border-top: 1.5mm solid var(--orange); }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 6mm;
+      padding: 0 2.4mm;
+      border-radius: 1.2mm;
+      background: #e9eef5;
+      color: #304058;
+      font: 700 7.5pt Arial, sans-serif;
+      text-transform: uppercase;
+    }
+    .tag.good { color: #08733a; background: #dff5e8; }
+    .tag.warn { color: #785d00; background: #fff4c7; }
+    .tag.bad { color: #9e2828; background: #ffe5e2; }
+    .dark .tag { background: #1b2a40; color: #dbe7f7; }
+    .number-list { counter-reset: guide; list-style: none; padding: 0; margin: 0; }
+    .number-list li {
+      counter-increment: guide;
+      display: grid;
+      grid-template-columns: 8mm 1fr;
+      gap: 3mm;
+      margin-bottom: 3.2mm;
+      align-items: start;
+    }
+    .number-list li::before {
+      content: counter(guide);
+      display: grid;
+      place-items: center;
+      width: 7mm;
+      height: 7mm;
+      border-radius: 50%;
+      background: var(--ink);
+      color: #fff;
+      font: 700 8pt Arial, sans-serif;
+    }
+    .dark .number-list li::before { background: var(--gold); color: #111; }
+    .mock-shell {
+      border: 1px solid #2a3b52;
+      background: #071221;
+      border-radius: 2mm;
+      overflow: hidden;
+      color: #eef4fb;
+      margin-bottom: 5mm;
+    }
+    .mock-chart {
+      height: 59mm;
+      position: relative;
+      background:
+        linear-gradient(90deg, transparent 24.8%, #1c2a3e 25%, transparent 25.2%, transparent 49.8%, #1c2a3e 50%, transparent 50.2%, transparent 74.8%, #1c2a3e 75%, transparent 75.2%),
+        linear-gradient(0deg, transparent 24.8%, #1c2a3e 25%, transparent 25.2%, transparent 49.8%, #1c2a3e 50%, transparent 50.2%, transparent 74.8%, #1c2a3e 75%, transparent 75.2%);
+    }
+    .candles { position: absolute; inset: 8mm 8mm 6mm; display: flex; gap: 2mm; align-items: center; }
+    .candle { position: relative; width: 3.2mm; height: var(--h); background: var(--c); margin-top: var(--y); }
+    .candle::before { content: ""; position: absolute; left: 1.45mm; top: -3mm; width: .3mm; height: calc(100% + 6mm); background: var(--c); }
+    .zone-line { position: absolute; left: 0; right: 0; height: .35mm; background: var(--cyan); bottom: 12mm; }
+    .zone-line span { position: absolute; right: 3mm; top: -3mm; background: var(--cyan); color: #03141b; padding: .5mm 2mm; font: 700 7pt Arial; }
+    .panel {
+      display: grid;
+      grid-template-columns: 34mm 1fr 16mm;
+      min-height: 30mm;
+      border-top: 1px solid #405069;
+    }
+    .panel-label { padding: 4mm; }
+    .panel-label strong { display: block; color: var(--gold); font: 700 9pt Arial; }
+    .panel-label span { color: #7f8ea3; font-size: 7.5pt; }
+    .bars { display: flex; align-items: center; gap: 1.1mm; padding: 3mm 0; }
+    .bar { width: 2.5mm; height: var(--h); background: var(--c); }
+    .axis { display: flex; flex-direction: column; justify-content: space-between; padding: 2mm; color: #a8b2c0; font: 7pt Arial; }
+    .callout {
+      border-left: 1.3mm solid var(--cyan);
+      padding: 3mm 4mm;
+      background: #e7f8fc;
+      margin: 4mm 0;
+    }
+    .callout.warn { border-color: var(--gold); background: #fff8dc; }
+    .callout.bad { border-color: var(--red); background: #ffebe8; }
+    .dark .callout { background: #0d2230; }
+    .dark .callout.warn { background: #29240f; }
+    .dark .callout.bad { background: #2b1518; }
+    .scale {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      overflow: hidden;
+      border-radius: 2mm;
+      margin: 5mm 0;
+      color: #fff;
+      text-align: center;
+    }
+    .scale div { padding: 4mm 1.5mm; }
+    .scale b, .scale span { display: block; }
+    .scale b { font: 700 10pt Arial; }
+    .scale span { font-size: 7.5pt; }
+    .s-red { background: #b73535; }
+    .s-orange { background: #d06d2c; }
+    .s-gray { background: #65748a; }
+    .s-green { background: #168b53; }
+    .s-darkgreen { background: #09683c; }
+    .matrix { width: 100%; border-collapse: collapse; margin-top: 4mm; }
+    .matrix th, .matrix td { border: 1px solid #cdd6e1; padding: 3mm; text-align: left; vertical-align: top; }
+    .matrix th { background: #e7ecf3; font-size: 8.5pt; }
+    .matrix td { background: #fff; }
+    .dark .matrix th { background: #18263a; border-color: #33445c; }
+    .dark .matrix td { background: #0b1727; border-color: #33445c; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr 8mm 1fr 8mm 1fr;
+      align-items: stretch;
+      gap: 2mm;
+      margin: 5mm 0;
+    }
+    .flow-step { padding: 4mm; border: 1px solid #cfd7e2; border-radius: 2mm; background: #fff; }
+    .flow-step b { display: block; color: #0b6d84; margin-bottom: 1mm; }
+    .arrow { display: grid; place-items: center; color: var(--muted); font: 700 14pt Arial; }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li { position: relative; padding-left: 8mm; margin-bottom: 2.4mm; }
+    .checklist li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 1.2mm;
+      width: 4.5mm;
+      height: 4.5mm;
+      border: 1px solid #8a98aa;
+      border-radius: 1mm;
+    }
+    .do-dont { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+    .do-dont section { padding: 5mm; border-radius: 2mm; }
+    .do { background: #e8f7ee; border: 1px solid #b5e3c7; }
+    .dont { background: #fff0ed; border: 1px solid #f2c3bc; }
+    .footer-note { position: absolute; left: 14mm; bottom: 7mm; color: #7d8999; font-size: 7.5pt; }
+    .tiny { font-size: 8pt; }
+    .status-row { display: flex; flex-wrap: wrap; gap: 2mm; margin: 3mm 0; }
+    .legend { display: flex; gap: 5mm; flex-wrap: wrap; margin-top: 3mm; font-size: 8pt; }
+    .legend i { display: inline-block; width: 4mm; height: 3mm; margin-right: 1.5mm; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <section class="page dark">
+    <div class="brand">
+      <div class="brand-mark"><div class="diamond"></div></div>
+      <div class="brand-copy"><span>SH MARKET ANALYZER</span><strong>Diamond Discovery</strong></div>
+    </div>
+    <div class="eyebrow">USER TRAINING GUIDE / V3.7</div>
+    <div class="cover-grid">
+      <div>
+        <h1>របៀបមើល<br>Indicator Panel</h1>
+        <div class="cover-rule"></div>
+        <p class="muted">សៀវភៅណែនាំខ្លីសម្រាប់អាន MACD, RSI, Market Pressure និងប្រើវាជាមួយ Diamond Zone លើ XAU និង BTC។</p>
+      </div>
+      <div class="cover-meta">
+        <b>Scalp</b><span>5M / 15M</span>
+        <br><b>Swing</b><span>1H / 4H</span>
+        <br><b>Edition</b><span>21 July 2026</span>
+      </div>
+    </div>
+    <div class="core-rule">
+      <strong>ច្បាប់សំខាន់បំផុត</strong>
+      <p>Indicator Panel ជា Confirmation និង Market Context មិនមែនជាប៊ូតុង Buy/Sell ដោយខ្លួនឯងទេ។ ត្រូវអានតែពេល Feed = MATCHED, Candle = REAL និង Data Lock បានដោះ។</p>
+    </div>
+    <div class="footer-note">SH Indicator Panel Guide / Local Training Edition</div>
+    <div class="page-no">01</div>
+  </section>
+
+  <section class="page">
+    <div class="section-head">
+      <div><div class="eyebrow">01 / PANEL ANATOMY</div><h2>ស្គាល់ផ្ទាំងមុនអាន Signal</h2></div>
+      <p>XAUUSD / BTCUSD</p>
+    </div>
+    <div class="mock-shell">
+      <div class="mock-chart">
+        <div class="candles">
+          <i class="candle" style="--h:12mm;--y:16mm;--c:#f04f48"></i><i class="candle" style="--h:17mm;--y:11mm;--c:#e9e62b"></i>
+          <i class="candle" style="--h:10mm;--y:8mm;--c:#e9e62b"></i><i class="candle" style="--h:13mm;--y:3mm;--c:#e9e62b"></i>
+          <i class="candle" style="--h:9mm;--y:0;--c:#f04f48"></i><i class="candle" style="--h:16mm;--y:5mm;--c:#f04f48"></i>
+          <i class="candle" style="--h:11mm;--y:13mm;--c:#e9e62b"></i><i class="candle" style="--h:18mm;--y:7mm;--c:#e9e62b"></i>
+          <i class="candle" style="--h:12mm;--y:1mm;--c:#e9e62b"></i><i class="candle" style="--h:8mm;--y:4mm;--c:#f04f48"></i>
+          <i class="candle" style="--h:14mm;--y:9mm;--c:#f04f48"></i><i class="candle" style="--h:16mm;--y:14mm;--c:#e9e62b"></i>
+        </div>
+        <div class="zone-line"><span>BUY DIAMOND ZONE</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-label"><strong>MACD 12/26/9</strong><span>Momentum</span></div>
+        <div class="bars">
+          <i class="bar" style="--h:5mm;--c:#20c86b"></i><i class="bar" style="--h:8mm;--c:#20c86b"></i><i class="bar" style="--h:12mm;--c:#20c86b"></i><i class="bar" style="--h:9mm;--c:#20c86b"></i><i class="bar" style="--h:4mm;--c:#20c86b"></i><i class="bar" style="--h:5mm;--c:#f04f48"></i><i class="bar" style="--h:10mm;--c:#f04f48"></i><i class="bar" style="--h:14mm;--c:#f04f48"></i><i class="bar" style="--h:9mm;--c:#f04f48"></i>
+        </div>
+        <div class="axis"><span>+</span><span>0</span><span>−</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-label"><strong>RSI 14</strong><span>70 / 50 / 30</span></div>
+        <div class="bars">
+          <i class="bar" style="--h:8mm;--c:#20c86b"></i><i class="bar" style="--h:11mm;--c:#20c86b"></i><i class="bar" style="--h:14mm;--c:#20c86b"></i><i class="bar" style="--h:9mm;--c:#20c86b"></i><i class="bar" style="--h:4mm;--c:#20c86b"></i><i class="bar" style="--h:3mm;--c:#308ff3"></i><i class="bar" style="--h:7mm;--c:#308ff3"></i><i class="bar" style="--h:10mm;--c:#308ff3"></i><i class="bar" style="--h:6mm;--c:#308ff3"></i>
+        </div>
+        <div class="axis"><span>70</span><span>50</span><span>30</span></div>
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="card cyan"><h3>Chart</h3><p>មើល Price structure, Diamond Zone និង Key Levels។</p></div>
+      <div class="card accent"><h3>MACD</h3><p>មើលទិស និងកម្លាំង Momentum ថាកំពុងកើន ឬចុះ។</p></div>
+      <div class="card orange"><h3>RSI</h3><p>មើល Momentum zone និងទីតាំង 70 / 50 / 30។</p></div>
+    </div>
+    <div class="callout warn"><strong>អានតាមលំដាប់៖</strong> Data Trust → Diamond Zone → MACD → RSI → Closed Candle Confirmation។</div>
+    <div class="page-no">02</div>
+  </section>
+
+  <section class="page dark">
+    <div class="section-head">
+      <div><div class="eyebrow">02 / MACD HISTOGRAM</div><h2>អាន MACD 12 / 26 / 9</h2></div>
+      <p>Momentum, not price prediction</p>
+    </div>
+    <div class="grid-2">
+      <div class="card cyan">
+        <span class="tag good">ABOVE ZERO</span>
+        <h3>បារ Green ខាងលើ 0</h3>
+        <p>Momentum មានទិស Bullish។ បារកាន់តែវែង មានន័យថាកម្លាំងកំពុងពង្រីកបើប្រៀបនឹង Signal line។</p>
+      </div>
+      <div class="card orange">
+        <span class="tag bad">BELOW ZERO</span>
+        <h3>បារ Red ខាងក្រោម 0</h3>
+        <p>Momentum មានទិស Bearish។ បារកាន់តែវែង មានន័យថាសម្ពាធលក់កំពុងពង្រីក។</p>
+      </div>
+    </div>
+    <div class="mock-shell" style="margin-top:6mm">
+      <div class="panel" style="min-height:55mm;grid-template-columns:42mm 1fr 18mm">
+        <div class="panel-label"><strong>MACD HISTOGRAM</strong><span>Example cycle</span></div>
+        <div class="bars" style="align-items:center">
+          <i class="bar" style="--h:3mm;--c:#20c86b"></i><i class="bar" style="--h:6mm;--c:#20c86b"></i><i class="bar" style="--h:11mm;--c:#20c86b"></i><i class="bar" style="--h:16mm;--c:#20c86b"></i><i class="bar" style="--h:19mm;--c:#20c86b"></i><i class="bar" style="--h:14mm;--c:#20c86b"></i><i class="bar" style="--h:8mm;--c:#20c86b"></i><i class="bar" style="--h:3mm;--c:#20c86b"></i><i class="bar" style="--h:4mm;--c:#f04f48"></i><i class="bar" style="--h:9mm;--c:#f04f48"></i><i class="bar" style="--h:15mm;--c:#f04f48"></i><i class="bar" style="--h:19mm;--c:#f04f48"></i><i class="bar" style="--h:13mm;--c:#f04f48"></i><i class="bar" style="--h:7mm;--c:#f04f48"></i>
+        </div>
+        <div class="axis"><span>RISING</span><span>0</span><span>FALLING</span></div>
+      </div>
+    </div>
+    <table class="matrix">
+      <tr><th>អ្វីដែលឃើញ</th><th>អត្ថន័យ</th><th>ការប្រើក្នុង Tool</th></tr>
+      <tr><td>Green និងវែងឡើង</td><td>Bullish momentum កំពុងកើន</td><td>គាំទ្រ Buy Zone បើ structure និង RSI ស្រប</td></tr>
+      <tr><td>Green តែខ្លីចុះ</td><td>Bullish momentum កំពុងខ្សោយ</td><td>កុំ chase Buy; រង់ចាំ pullback ឬ confirmation</td></tr>
+      <tr><td>Red និងវែងឡើង</td><td>Bearish momentum កំពុងកើន</td><td>គាំទ្រ Sell Zone បើ structure និង RSI ស្រប</td></tr>
+      <tr><td>Red តែខ្លីចុះ</td><td>Bearish momentum កំពុងខ្សោយ</td><td>កុំ chase Sell នៅ low; រង់ចាំ reaction</td></tr>
+      <tr><td>ឆ្លង Zero</td><td>Momentum regime អាចកំពុងប្ដូរ</td><td>ត្រូវការបិទ candle និង RSI confirmation</td></tr>
+    </table>
+    <div class="callout bad"><strong>កំហុសទូទៅ៖</strong> Green មិនមានន័យថាត្រូវ Buy ភ្លាម និង Red មិនមានន័យថាត្រូវ Sell ភ្លាម។ ពិនិត្យទីតាំង Price និង Diamond Zone ជាមុន។</div>
+    <div class="page-no">03</div>
+  </section>
+
+  <section class="page">
+    <div class="section-head">
+      <div><div class="eyebrow">03 / RSI 14</div><h2>អាន RSI ដោយផ្តោតលើ 50</h2></div>
+      <p>Momentum zone / 14 periods</p>
+    </div>
+    <div class="scale">
+      <div class="s-red"><b>0–30</b><span>OVERSOLD</span></div>
+      <div class="s-orange"><b>30–45</b><span>BEARISH</span></div>
+      <div class="s-gray"><b>45–55</b><span>NEUTRAL</span></div>
+      <div class="s-green"><b>55–70</b><span>BULLISH</span></div>
+      <div class="s-darkgreen"><b>70–100</b><span>OVERBOUGHT</span></div>
+    </div>
+    <div class="grid-2">
+      <div>
+        <div class="card cyan"><h3>RSI ខាងលើ 50</h3><p>Tool បង្ហាញបារពណ៌ Green។ Momentum ទូទៅលំអៀងទៅ Bullish។ ចន្លោះ 55–70 ជាតំបន់ Bullish ដែលមានប្រយោជន៍ជាងការមើលត្រឹម 70។</p></div>
+        <div class="card orange" style="margin-top:4mm"><h3>RSI ខាងក្រោម 50</h3><p>Tool បង្ហាញបារពណ៌ Blue។ Momentum ទូទៅលំអៀងទៅ Bearish។ ចន្លោះ 30–45 ជាតំបន់ Bearish context។</p></div>
+      </div>
+      <div>
+        <div class="card accent"><h3>RISING / FALLING</h3><p><b>RISING</b> = RSI បច្ចុប្បន្នខ្ពស់ជាង bar មុន។ <b>FALLING</b> = RSI បច្ចុប្បន្នទាបជាង bar មុន។ Direction នេះអាចសំខាន់ជាងលេខតែមួយ។</p></div>
+        <div class="card" style="margin-top:4mm"><h3>តំបន់ 45–55</h3><p>ជាតំបន់ Neutral/Mixed។ ជាទូទៅគួររង់ចាំ Price ចេញពី range ឬ Diamond Zone មាន closed-candle reaction ច្បាស់។</p></div>
+      </div>
+    </div>
+    <div class="callout warn"><strong>កុំច្រឡំ៖</strong> RSI ≥ 70 មិនមែន Sell ដោយស្វ័យប្រវត្តិទេ។ Trend ខ្លាំងអាចនៅ Overbought បានយូរ។ RSI ≤ 30 ក៏មិនមែន Buy ដោយស្វ័យប្រវត្តិដែរ។</div>
+    <h3 style="margin-top:6mm">ឧទាហរណ៍អានរហ័ស</h3>
+    <table class="matrix">
+      <tr><th>RSI</th><th>Momentum</th><th>ការបកស្រាយ</th></tr>
+      <tr><td>58</td><td>RISING</td><td>Bullish context ល្អ ប៉ុន្តែត្រូវរក Buy Zone និង candle confirmation</td></tr>
+      <tr><td>73</td><td>RISING</td><td>Trend ខ្លាំង ប៉ុន្តែហានិភ័យ chase high; រង់ចាំ pullback</td></tr>
+      <tr><td>42</td><td>FALLING</td><td>Bearish context; Sell Zone មានតម្លៃជាង Buy counter-trend</td></tr>
+      <tr><td>27</td><td>FALLING</td><td>Oversold មិនទាន់មាន reversal; រង់ចាំ rejection/reclaim</td></tr>
+    </table>
+    <div class="page-no">04</div>
+  </section>
+
+  <section class="page dark">
+    <div class="section-head">
+      <div><div class="eyebrow">04 / CONFLUENCE</div><h2>MACD + RSI + Market Pressure</h2></div>
+      <p>Context only</p>
+    </div>
+    <div class="grid-3">
+      <div class="card cyan"><span class="tag good">ALIGNED BULLISH</span><h3>MACD &gt; 0<br>RSI ≥ 52</h3><p>Momentum ទាំងពីរស្របទៅ Buy។ មិនទាន់ជា Entry រហូតដល់ Price នៅ Buy Zone និង candle បិទបញ្ជាក់។</p></div>
+      <div class="card orange"><span class="tag bad">ALIGNED BEARISH</span><h3>MACD &lt; 0<br>RSI ≤ 48</h3><p>Momentum ទាំងពីរស្របទៅ Sell។ មិនត្រូវ Sell នៅ low ដោយគ្មាន Sell Zone/retest។</p></div>
+      <div class="card accent"><span class="tag warn">MIXED</span><h3>មិនស្របគ្នា</h3><p>MACD និង RSI ផ្ដល់ទិសខុសគ្នា។ Tool គួររង់ចាំ មិនបង្ខំ Diamond Entry។</p></div>
+    </div>
+    <h3 style="margin-top:7mm">Market Pressure ប្រាប់អ្វី?</h3>
+    <p class="muted">Tool ផ្សំសញ្ញា MACD 20 bars ចុងក្រោយ និងចម្ងាយ RSI ពី 50 ទៅជា Bullish / Bearish / Neutral។ វាជា Context score មិនមែន win-rate ឬ probability ទេ។</p>
+    <div class="mock-shell">
+      <div style="display:grid;grid-template-columns:1.8fr 1fr 1fr;padding:5mm;gap:3mm">
+        <div><span class="eyebrow">MARKET PRESSURE</span><h3 style="margin:1mm 0">Directional balance</h3></div>
+        <div style="border-left:1px solid #31435a;padding-left:4mm"><span class="muted">Bullish</span><strong style="display:block;color:#20c86b;font:700 20pt Arial">62%</strong></div>
+        <div style="border-left:1px solid #31435a;padding-left:4mm"><span class="muted">Bearish</span><strong style="display:block;color:#f04f48;font:700 20pt Arial">28%</strong></div>
+      </div>
+      <div style="height:5mm;background:linear-gradient(90deg,#20c86b 0 62%,#f04f48 62% 90%,#65748a 90% 100%)"></div>
+    </div>
+    <table class="matrix">
+      <tr><th>Diamond Zone</th><th>Confluence</th><th>Action</th></tr>
+      <tr><td>Buy Zone</td><td>Aligned Bullish</td><td>រក bullish closed candle / reclaim; កុំ chase ខាងលើ zone</td></tr>
+      <tr><td>Sell Zone</td><td>Aligned Bearish</td><td>រក bearish closed candle / rejection; កុំ chase ខាងក្រោម zone</td></tr>
+      <tr><td>Buy Zone</td><td>Aligned Bearish</td><td>Counter-trend risk; រង់ចាំ structure shift មុន</td></tr>
+      <tr><td>Sell Zone</td><td>Aligned Bullish</td><td>Trend continuation risk; កុំ Sell ដោយសារតែ zone តែមួយ</td></tr>
+      <tr><td>Zone ណាមួយ</td><td>Mixed</td><td>WAIT និងរក closed-candle confirmation បន្ថែម</td></tr>
+    </table>
+    <div class="page-no">05</div>
+  </section>
+
+  <section class="page">
+    <div class="section-head">
+      <div><div class="eyebrow">05 / SCALP WORKFLOW</div><h2>Scalp: 15M Context → 5M Confirm</h2></div>
+      <p>Fast, but not rushed</p>
+    </div>
+    <div class="flow">
+      <div class="flow-step"><b>1. DATA</b>Feed MATCHED<br>OHLC CLEAN</div><div class="arrow">›</div>
+      <div class="flow-step"><b>2. 15M</b>Zone + Bias<br>Market context</div><div class="arrow">›</div>
+      <div class="flow-step"><b>3. 5M</b>Closed candle<br>Momentum confirm</div>
+    </div>
+    <div class="grid-2">
+      <div class="card cyan">
+        <h3>Scalp Buy Checklist</h3>
+        <ul class="checklist">
+          <li>15M Price នៅ Buy Diamond Zone ឬ support reaction</li>
+          <li>MACD 15M មិនបង្ហាញ bearish expansion ខ្លាំង</li>
+          <li>RSI 15M ឡើងទៅ 50/52 ឬរក្សា bullish zone</li>
+          <li>5M candle បិទ reclaim/rejection ពី zone</li>
+          <li>MACD 5M Rising និង RSI 5M Rising</li>
+          <li>គ្មាន High-impact News Lock</li>
+        </ul>
+      </div>
+      <div class="card orange">
+        <h3>Scalp Sell Checklist</h3>
+        <ul class="checklist">
+          <li>15M Price នៅ Sell Diamond Zone ឬ resistance reaction</li>
+          <li>MACD 15M មិនបង្ហាញ bullish expansion ខ្លាំង</li>
+          <li>RSI 15M ចុះក្រោម 50/48 ឬរក្សា bearish zone</li>
+          <li>5M candle បិទ rejection/retest ពី zone</li>
+          <li>MACD 5M Falling និង RSI 5M Falling</li>
+          <li>គ្មាន High-impact News Lock</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout bad"><strong>កុំ Entry ពេល៖</strong> 15M និង 5M ផ្ដល់ទិសផ្ទុយគ្នា, Candle នៅតែ forming, Price រត់ឆ្ងាយពី zone ឬ Auto Engine បង្ហាញ Data Lock។</div>
+    <h3 style="margin-top:5mm">លំដាប់សម្រេចចិត្ត 10 វិនាទី</h3>
+    <ol class="number-list">
+      <li><div><b>រក Zone មុន</b><br><span class="muted">គ្មាន Zone = គ្មានការរៀបចំ Entry។</span></div></li>
+      <li><div><b>មើល MACD និង RSI នៅ 15M</b><br><span class="muted">ស្វែងរក context មិនមែនចុច trade តាមពណ៌។</span></div></li>
+      <li><div><b>ចុះទៅ 5M</b><br><span class="muted">រង់ចាំ candle បិទ និង momentum ស្រប។</span></div></li>
+      <li><div><b>បោះបង់បើ late</b><br><span class="muted">Entry ដែលខកខាន ល្អជាង chase ទៅតាម price។</span></div></li>
+    </ol>
+    <div class="page-no">06</div>
+  </section>
+
+  <section class="page dark">
+    <div class="section-head">
+      <div><div class="eyebrow">06 / SWING WORKFLOW</div><h2>Swing: 4H Direction → 1H Confirm</h2></div>
+      <p>Fewer, stronger decisions</p>
+    </div>
+    <div class="flow">
+      <div class="flow-step" style="background:#0d1828;border-color:#31445d"><b>1. 4H</b>Major bias<br>Location</div><div class="arrow">›</div>
+      <div class="flow-step" style="background:#0d1828;border-color:#31445d"><b>2. 1H</b>Diamond Zone<br>Structure</div><div class="arrow">›</div>
+      <div class="flow-step" style="background:#0d1828;border-color:#31445d"><b>3. CLOSE</b>Momentum<br>Confirmation</div>
+    </div>
+    <div class="grid-2">
+      <div>
+        <div class="card cyan"><h3>Swing Buy</h3><p>4H structure មិន Bearish ខ្លាំង, Price ឈានទៅ Discount/Support, 1H Buy Zone មាន rejection, MACD ងើបឡើង និង RSI reclaim 50/52។</p></div>
+        <div class="card orange" style="margin-top:4mm"><h3>Swing Sell</h3><p>4H structure មិន Bullish ខ្លាំង, Price ឈានទៅ Premium/Resistance, 1H Sell Zone មាន rejection, MACD ធ្លាក់ និង RSI បាត់ 50/48។</p></div>
+      </div>
+      <div class="card accent">
+        <h3>Swing Quality Questions</h3>
+        <ul class="checklist">
+          <li>4H និង 1H មាន direction agreement ទេ?</li>
+          <li>Zone នៅទីតាំងល្អ ឬនៅកណ្ដាល range?</li>
+          <li>MACD កំពុង expand ឬ weaken?</li>
+          <li>RSI reclaim/reject 50 ឬគ្រាន់តែ overbought/oversold?</li>
+          <li>Candle ដែលប្រើ confirm បានបិទរួចទេ?</li>
+          <li>News risk អាចបំផ្លាញ setup ទេ?</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout warn"><strong>ចំណាំ៖</strong> Swing Diamond Zone មិនគួរបង្កើតច្រើនដូច Scalp។ គុណភាពទីតាំង និង 4H/1H agreement សំខាន់ជាងចំនួន signal។</div>
+    <h3 style="margin-top:6mm">Timeframe Rules</h3>
+    <table class="matrix">
+      <tr><th>Style</th><th>Context</th><th>Confirmation</th><th>អ្វីត្រូវជៀសវាង</th></tr>
+      <tr><td>Scalp</td><td>15M</td><td>5M</td><td>Chase, forming candle, news spike</td></tr>
+      <tr><td>Swing</td><td>4H</td><td>1H</td><td>Counter-trend zone, mid-range entry</td></tr>
+    </table>
+    <div class="page-no">07</div>
+  </section>
+
+  <section class="page">
+    <div class="section-head">
+      <div><div class="eyebrow">07 / SAFETY CHECK</div><h2>ពេលណាគួរជឿ និងពេលណាគួររង់ចាំ</h2></div>
+      <p>Final reference</p>
+    </div>
+    <div class="do-dont">
+      <section class="do">
+        <h3>អាចអាន Panel បាន</h3>
+        <div class="status-row"><span class="tag good">FEED MATCHED</span><span class="tag good">OHLC CLEAN</span><span class="tag good">REAL</span></div>
+        <ul class="checklist">
+          <li>History និង live price ស្របគ្នា</li>
+          <li>Timeframe មាន candle គ្រប់គ្រាន់</li>
+          <li>ប្រើ closed provider candles</li>
+          <li>MACD/RSI update តាម timeframe ដែលបានជ្រើស</li>
+        </ul>
+      </section>
+      <section class="dont">
+        <h3>ត្រូវរង់ចាំ</h3>
+        <div class="status-row"><span class="tag bad">DATA LOCK</span><span class="tag bad">UNMATCHED</span><span class="tag warn">SYNCING</span></div>
+        <ul class="checklist">
+          <li>Preloaded/Test/Fallback history</li>
+          <li>Price gap ឬ stale candles</li>
+          <li>Candle នៅតែ forming</li>
+          <li>Indicator Panel បង្ហាញ WAITING/MIXED</li>
+        </ul>
+      </section>
+    </div>
+    <h3 style="margin-top:7mm">សង្ខេបពណ៌ និងពាក្យ</h3>
+    <table class="matrix">
+      <tr><th>ពាក្យ/ពណ៌</th><th>អត្ថន័យខ្លី</th></tr>
+      <tr><td>MACD Green</td><td>Histogram ≥ 0; bullish momentum context</td></tr>
+      <tr><td>MACD Red</td><td>Histogram &lt; 0; bearish momentum context</td></tr>
+      <tr><td>RSI Green</td><td>RSI ≥ 50</td></tr>
+      <tr><td>RSI Blue</td><td>RSI &lt; 50</td></tr>
+      <tr><td>RISING / FALLING</td><td>តម្លៃ indicator កើន/ថយពី bar មុន</td></tr>
+      <tr><td>ALIGNED</td><td>MACD និង RSI ស្របទិស</td></tr>
+      <tr><td>MIXED</td><td>មិនទាន់ស្រប; រង់ចាំ confirmation</td></tr>
+      <tr><td>Diamond Blue / Orange</td><td>Buy key zone / Sell key zone មិនមែន guarantee</td></tr>
+    </table>
+    <div class="callout warn"><strong>Risk Notice:</strong> Tool និង Indicator មិនធានាប្រាក់ចំណេញទេ។ ប្រើ position sizing, stop/invalidation និងកុំប្រើប្រាក់ដែលមិនអាចទទួលការខាតបង់បាន។</div>
+    <div class="card accent" style="margin-top:5mm;text-align:center">
+      <h3 style="font-size:16pt">Zone → Context → Confirmation → Risk</h3>
+      <p class="muted" style="margin:0">នេះជាលំដាប់ដែលគួរប្រើរាល់ពេល មិនថា XAU ឬ BTC។</p>
+    </div>
+    <div class="footer-note">SH Market Analyzer / Indicator Panel User Guide</div>
+    <div class="page-no">08</div>
+  </section>
+</body>
+</html>

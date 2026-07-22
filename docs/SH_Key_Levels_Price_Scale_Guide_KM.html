@@ -1,0 +1,797 @@
+<!doctype html>
+<html lang="km">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SH Key Levels &amp; Price Scale Guide</title>
+  <style>
+    @font-face {
+      font-family: "Khmer Guide";
+      src: url("file:///C:/Windows/Fonts/KhmerOSbattambang.ttf") format("truetype");
+      font-weight: 400;
+    }
+
+    :root {
+      --ink: #111827;
+      --muted: #66758a;
+      --line: #cad5e2;
+      --paper: #f4f7fb;
+      --navy: #071321;
+      --navy-2: #0c1b2e;
+      --cyan: #21c7e8;
+      --cyan-soft: #dff8fd;
+      --orange: #ff914d;
+      --orange-soft: #fff0e6;
+      --yellow: #efca45;
+      --yellow-soft: #fff8d9;
+      --green: #22a866;
+      --green-soft: #e2f7ea;
+      --red: #d84949;
+      --red-soft: #ffe9e7;
+      --white: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: #283649;
+      color: var(--ink);
+      font-family: "Khmer Guide", Arial, sans-serif;
+      letter-spacing: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .page {
+      position: relative;
+      width: 210mm;
+      height: 297mm;
+      margin: 12px auto;
+      padding: 14mm;
+      overflow: hidden;
+      background: var(--paper);
+      page-break-after: always;
+    }
+    .page:last-child { page-break-after: auto; }
+    .page.dark { background: var(--navy); color: #edf4ff; }
+
+    @page { size: A4; margin: 0; }
+    @media print {
+      body { background: transparent; }
+      .page { margin: 0; }
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 34px; line-height: 1.25; margin-bottom: 12px; }
+    h2 { font-size: 25px; line-height: 1.35; margin-bottom: 10px; }
+    h3 { font-size: 17px; line-height: 1.45; margin-bottom: 7px; }
+    p, li, td, th { font-size: 13.2px; line-height: 1.7; }
+    small { font-size: 10.5px; line-height: 1.5; }
+    strong { font-weight: 700; }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-mark {
+      position: relative;
+      width: 48px;
+      height: 48px;
+      border: 1px solid var(--cyan);
+      border-radius: 7px;
+      background: rgba(33, 199, 232, .08);
+    }
+    .brand-mark::before {
+      content: "";
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      top: 11px;
+      left: 11px;
+      border: 2px solid var(--cyan);
+      transform: rotate(45deg);
+      border-radius: 3px;
+    }
+    .brand b { display: block; color: var(--yellow); font-size: 18px; }
+    .brand span { display: block; color: #8ea0b7; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+
+    .eyebrow {
+      color: var(--cyan);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .muted { color: var(--muted); }
+    .dark .muted { color: #92a2b8; }
+    .accent { color: var(--yellow); }
+    .cyan { color: var(--cyan); }
+    .orange { color: var(--orange); }
+    .good { color: var(--green); }
+    .bad { color: var(--red); }
+
+    .rule { height: 1px; background: var(--line); margin: 12px 0 16px; }
+    .dark .rule { background: #263750; }
+    .footer {
+      position: absolute;
+      left: 14mm;
+      right: 14mm;
+      bottom: 8mm;
+      display: flex;
+      justify-content: space-between;
+      color: #7f8fa5;
+      font-size: 9px;
+    }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; }
+    .card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--white);
+    }
+    .dark .card { background: var(--navy-2); border-color: #263b56; }
+    .card.cyan-top { border-top: 4px solid var(--cyan); }
+    .card.orange-top { border-top: 4px solid var(--orange); }
+    .card.yellow-top { border-top: 4px solid var(--yellow); }
+    .card.green-top { border-top: 4px solid var(--green); }
+    .card.red-top { border-top: 4px solid var(--red); }
+
+    .callout {
+      padding: 12px 14px;
+      border-left: 5px solid var(--yellow);
+      background: var(--yellow-soft);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .dark .callout { background: #172337; color: #edf4ff; }
+    .callout.cyan-callout { border-color: var(--cyan); background: var(--cyan-soft); }
+    .callout.red-callout { border-color: var(--red); background: var(--red-soft); }
+    .dark .callout.cyan-callout { background: #092938; }
+    .dark .callout.red-callout { background: #32191e; }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      margin: 2px 3px 2px 0;
+      border-radius: 4px;
+      font-family: Arial, sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      background: #e5ebf3;
+      color: #334155;
+    }
+    .pill.cyan-pill { background: var(--cyan-soft); color: #087c93; }
+    .pill.orange-pill { background: var(--orange-soft); color: #a84918; }
+    .pill.green-pill { background: var(--green-soft); color: #137145; }
+    .pill.red-pill { background: var(--red-soft); color: #a82d32; }
+    .pill.yellow-pill { background: var(--yellow-soft); color: #806000; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px 10px; border: 1px solid var(--line); vertical-align: top; }
+    th { text-align: left; background: #e5ebf3; font-size: 11px; }
+    .dark th { background: #12243a; }
+    .dark td, .dark th { border-color: #30445e; }
+
+    ul.clean { margin: 8px 0 0; padding-left: 19px; }
+    ul.clean li { margin-bottom: 5px; }
+    .checklist { list-style: none; padding: 0; margin: 8px 0 0; }
+    .checklist li { position: relative; padding-left: 27px; margin-bottom: 8px; }
+    .checklist li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 5px;
+      width: 14px;
+      height: 14px;
+      border: 1px solid #8ca0b6;
+      border-radius: 3px;
+    }
+
+    .cover-title { margin-top: 58mm; max-width: 126mm; }
+    .cover-title h1 { font-size: 40px; }
+    .cover-grid {
+      display: grid;
+      grid-template-columns: 1.35fr .65fr;
+      align-items: end;
+      gap: 24px;
+      margin-top: 34px;
+    }
+    .cover-ladder {
+      padding-left: 20px;
+      border-left: 1px solid #41536c;
+      color: #b8c5d6;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.9;
+    }
+    .cover-ladder b { color: #fff; }
+
+    .ladder {
+      position: relative;
+      padding: 10px 0;
+      border: 1px solid #29405b;
+      border-radius: 7px;
+      background: #071625;
+      overflow: hidden;
+    }
+    .ladder::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .33;
+      background-image:
+        linear-gradient(#314056 1px, transparent 1px),
+        linear-gradient(90deg, #314056 1px, transparent 1px);
+      background-size: 100% 38px, 72px 100%;
+    }
+    .level {
+      position: relative;
+      display: grid;
+      grid-template-columns: 66px 1fr 94px;
+      align-items: center;
+      min-height: 35px;
+      color: #eef5ff;
+      font-family: Arial, sans-serif;
+      font-size: 11px;
+    }
+    .level::after {
+      content: "";
+      position: absolute;
+      left: 66px;
+      right: 94px;
+      top: 50%;
+      border-top: 1px dashed var(--level-color, #fff);
+    }
+    .level .tag, .level .price {
+      position: relative;
+      z-index: 2;
+      padding: 4px 7px;
+      color: #07111d;
+      background: var(--level-color, #fff);
+      font-weight: 700;
+    }
+    .level .tag { justify-self: start; }
+    .level .price { justify-self: end; min-width: 86px; text-align: right; }
+    .level.k3 { --level-color: #f5ea28; }
+    .level.k2 { --level-color: #f1c65d; }
+    .level.k1 { --level-color: #71f609; }
+    .level.op { --level-color: #f3f4f6; }
+    .level.mlp { --level-color: #f5e875; }
+    .level.pivot { --level-color: #21cee5; }
+    .level.dls { --level-color: #21d4d4; }
+    .level.dlr { --level-color: #ff9f72; }
+    .level.current { --level-color: #a8a9b0; min-height: 42px; }
+    .level.current::after { border-top-style: solid; border-top-width: 2px; }
+
+    .formula-list { display: grid; gap: 8px; }
+    .formula {
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      gap: 10px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .formula:last-child { border-bottom: 0; }
+    .formula b { font-family: Arial, sans-serif; color: #0b819a; }
+
+    .state-flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      align-items: stretch;
+    }
+    .state-flow .step {
+      position: relative;
+      padding: 12px;
+      min-height: 96px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+    .state-flow .step:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      right: -8px;
+      top: 35px;
+      z-index: 3;
+      width: 16px;
+      height: 20px;
+      color: var(--muted);
+      background: var(--paper);
+      text-align: center;
+      font-family: Arial, sans-serif;
+      font-weight: 700;
+    }
+    .step b { display: block; color: var(--cyan); font-size: 11px; }
+    .step span { display: block; margin-top: 5px; font-size: 11px; line-height: 1.55; }
+
+    .candle-demo {
+      position: relative;
+      height: 88px;
+      margin-bottom: 8px;
+      border: 1px solid #263b56;
+      border-radius: 5px;
+      background: #071625;
+      overflow: hidden;
+    }
+    .candle-demo .zone {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 49px;
+      height: 12px;
+      background: rgba(33, 212, 212, .16);
+      border-top: 1px solid #21d4d4;
+      border-bottom: 1px solid #21d4d4;
+    }
+    .candle-demo.sell .zone { background: rgba(255, 145, 77, .16); border-color: var(--orange); top: 25px; }
+    .candle {
+      position: absolute;
+      width: 9px;
+      background: #f4ed24;
+      bottom: 20px;
+    }
+    .candle::before {
+      content: "";
+      position: absolute;
+      left: 4px;
+      top: -12px;
+      bottom: -12px;
+      width: 1px;
+      background: inherit;
+    }
+    .candle.red { background: #f04432; }
+    .c1 { left: 38px; height: 22px; }
+    .c2 { left: 58px; height: 31px; bottom: 9px; }
+    .c3 { left: 78px; height: 27px; bottom: 27px; }
+    .c4 { left: 98px; height: 35px; bottom: 31px; }
+    .sell .c1 { bottom: 42px; }
+    .sell .c2 { bottom: 40px; }
+    .sell .c3 { bottom: 22px; }
+    .sell .c4 { bottom: 13px; }
+
+    .action-box {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 8px;
+      background: #fff;
+    }
+    .action-box b { padding: 10px; background: #e7edf5; font-size: 11px; }
+    .action-box span { padding: 10px; font-size: 12px; line-height: 1.6; }
+    .dark .action-box { background: #0d1c2e; border-color: #2b405b; }
+    .dark .action-box b { background: #142740; }
+
+    .scenario-summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .scenario-summary div {
+      padding: 9px;
+      border: 1px solid #2b405b;
+      border-radius: 5px;
+      background: #0d1c2e;
+    }
+    .scenario-summary b { display: block; color: var(--cyan); font-size: 10px; }
+    .scenario-summary span { font-size: 11px; line-height: 1.45; }
+
+    .status-row {
+      display: grid;
+      grid-template-columns: 138px 1fr 156px;
+      border-bottom: 1px solid var(--line);
+    }
+    .status-row > * { padding: 9px; font-size: 11.5px; line-height: 1.55; }
+    .status-row .status { font-family: Arial, sans-serif; font-weight: 700; }
+    .status-row.ok .status { color: var(--green); }
+    .status-row.wait .status { color: #a87900; }
+    .status-row.stop .status { color: var(--red); }
+
+    .big-rule {
+      margin-top: 18px;
+      padding: 18px;
+      border-top: 5px solid var(--yellow);
+      border-radius: 7px;
+      background: #fff;
+      text-align: center;
+    }
+    .big-rule strong { display: block; font-size: 22px; }
+    .big-rule span { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+
+  <section class="page dark">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div><span>SH Market Analyzer</span><b>Diamond Discovery</b></div>
+    </div>
+
+    <div class="cover-title">
+      <div class="eyebrow">User Training Guide / V3.7</div>
+      <h1>របៀបមើល<br />Key Levels និង Price Scale</h1>
+      <p class="muted">ស្វែងយល់ពី K+ / K-, PRICE, OP, MLP, PIVOT និង Diamond Line ដើម្បីអានទីតាំងតម្លៃ XAU និង BTC បានងាយ។</p>
+    </div>
+
+    <div class="cover-grid">
+      <div class="callout">
+        <strong class="accent">គោលការណ៍សំខាន់</strong><br />
+        Level ទាំងនេះជា Market Map មិនមែនជា Buy/Sell command ទេ។ មើលទីតាំង Price ជាមុន រួចរង់ចាំ Diamond Zone, MTF Agreement និង closed-candle confirmation។
+      </div>
+      <div class="cover-ladder">
+        <b>K+3</b> Upper extension<br />
+        <b>K+2</b> Extended range<br />
+        <b>K+1</b> First range step<br />
+        <b>OP</b> Session open<br />
+        <b>K-1</b> Lower range step<br />
+        <b>K-2</b> Extended range<br />
+        <b>K-3</b> Lower extension
+      </div>
+    </div>
+
+    <div class="footer"><span>SH Key Levels Guide / Local Training Edition</span><span>01</span></div>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">01 / LEVEL ANATOMY</div>
+    <h2>Label នីមួយៗមានន័យអ្វី?</h2>
+    <div class="rule"></div>
+
+    <div class="grid-2">
+      <div class="ladder">
+        <div class="level k3"><span class="tag">K+3</span><i></i><span class="price">67694.36</span></div>
+        <div class="level k2"><span class="tag">K+2</span><i></i><span class="price">66881.41</span></div>
+        <div class="level current"><span class="tag">PRICE</span><i></i><span class="price">66246.41</span></div>
+        <div class="level k1"><span class="tag">K+1</span><i></i><span class="price">66068.46</span></div>
+        <div class="level op"><span class="tag">OP</span><i></i><span class="price">65255.51</span></div>
+        <div class="level dls"><span class="tag">DL SUP</span><i></i><span class="price">65128.91</span></div>
+        <div class="level mlp"><span class="tag">MLP</span><i></i><span class="price">64989.03</span></div>
+        <div class="level pivot"><span class="tag">PIVOT</span><i></i><span class="price">64718.17</span></div>
+        <div class="level k1"><span class="tag">K-1</span><i></i><span class="price">64442.56</span></div>
+        <div class="level k2"><span class="tag">K-2</span><i></i><span class="price">63629.61</span></div>
+        <div class="level k3"><span class="tag">K-3</span><i></i><span class="price">62816.66</span></div>
+      </div>
+
+      <div class="formula-list card">
+        <div class="formula"><b>PRICE</b><span>តម្លៃ Close ចុងក្រោយដែល Chart កំពុងបង្ហាញ។ វាផ្លាស់ទីតាម Candle ថ្មី។</span></div>
+        <div class="formula"><b>OP</b><span>Open របស់ Candle 5M ដែលបានបិទដំបូងក្នុង UTC Session បច្ចុប្បន្ន។</span></div>
+        <div class="formula"><b>MLP</b><span>Midline = (Open + Close) របស់ Session មុន ចែក 2។</span></div>
+        <div class="formula"><b>PIVOT</b><span>(High + Low + Close) របស់ Session មុន ចែក 3។</span></div>
+        <div class="formula"><b>K+/-</b><span>ជំហាន Volatility ពី OP ដោយប្រើ Daily ATR 14។</span></div>
+        <div class="formula"><b>DL SUP</b><span>Diamond Line Support: Buy key-zone context ដែល Engine កំពុងតាមដាន។</span></div>
+        <div class="formula"><b>DL RES</b><span>Diamond Line Resistance: Sell key-zone context ដែល Engine កំពុងតាមដាន។</span></div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:14px">
+      <strong>ចំណាំ:</strong> លេខពណ៌លឿងនៅជាប់ PRICE ក្នុង Chart គឺតម្លៃ Scale របស់ Candle/series ដូចគ្នា មិនមែនជាតម្លៃ Signal ទីពីរទេ។
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / Key Levels</span><span>02</span></div>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">02 / SESSION MAP</div>
+    <h2>អាន Direction តាម OP និង MLP</h2>
+    <div class="rule"></div>
+
+    <div class="grid-3">
+      <div class="card green-top">
+        <span class="pill green-pill">BULLISH CONTEXT</span>
+        <h3>PRICE លើ OP និង MLP</h3>
+        <p>Buyer កំពុងកាន់ Session context។ ស្វែងរក Buy Diamond support និងការបិទ Candle រក្សាលើ zone។</p>
+      </div>
+      <div class="card yellow-top">
+        <span class="pill yellow-pill">MIXED / RANGE</span>
+        <h3>PRICE នៅកណ្ដាល OP និង MLP</h3>
+        <p>Direction មិនច្បាស់។ រង់ចាំ Price ឆ្លង និងបិទនៅម្ខាងទាំងពីរ ឬ Diamond reaction ច្បាស់។</p>
+      </div>
+      <div class="card red-top">
+        <span class="pill red-pill">BEARISH CONTEXT</span>
+        <h3>PRICE ក្រោម OP និង MLP</h3>
+        <p>Seller កំពុងកាន់ Session context។ ស្វែងរក Sell Diamond resistance និងការបិទ Candle ក្រោម zone។</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:20px">Workflow ដែលគួរប្រើរាល់ពេល</h3>
+    <div class="state-flow">
+      <div class="step"><b>1. DATA</b><span>FEED MATCHED<br />OHLC CLEAN<br />Candle history recent</span></div>
+      <div class="step"><b>2. LOCATION</b><span>Price នៅលើ ឬក្រោម OP/MLP?</span></div>
+      <div class="step"><b>3. ZONE</b><span>DL SUP ឬ DL RES នៅជិត Price?</span></div>
+      <div class="step"><b>4. CONFIRM</b><span>MTF Agreement និង completed candle បាន Confirm?</span></div>
+    </div>
+
+    <div class="grid-2" style="margin-top:16px">
+      <div class="card cyan-top">
+        <h3>សម្រាប់ Scalp</h3>
+        <p><strong>15M Context -> 5M Confirmation</strong></p>
+        <ul class="clean">
+          <li>មើល Location និង Diamond Zone នៅ 15M។</li>
+          <li>រង់ចាំ 5M closed candle បង្ហាញ rejection/reclaim។</li>
+          <li>កុំសម្រេចចិត្តពី Candle ដែលមិនទាន់បិទ។</li>
+        </ul>
+      </div>
+      <div class="card orange-top">
+        <h3>សម្រាប់ Swing</h3>
+        <p><strong>4H Direction -> 1H Confirmation</strong></p>
+        <ul class="clean">
+          <li>មើល Direction និង Range នៅ 4H។</li>
+          <li>រង់ចាំ 1H reaction នៅ Diamond Zone។</li>
+          <li>5M noise មិនគួរប្ដូរ Swing idea ដោយខ្លួនឯងទេ។</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout red-callout" style="margin-top:14px">
+      <strong>កុំធ្វើ:</strong> PRICE លើ OP/MLP មិនមានន័យថាត្រូវ Buy ភ្លាមទេ ហើយ PRICE ក្រោម OP/MLP ក៏មិនមានន័យថាត្រូវ Sell ភ្លាមដែរ។ វាជា Direction context ប៉ុណ្ណោះ។
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / Session Context</span><span>03</span></div>
+  </section>
+
+  <section class="page dark">
+    <div class="eyebrow">03 / K-RANGE MAP</div>
+    <h2>តើ K+1/2/3 និង K-1/2/3 ប្រើដូចម្ដេច?</h2>
+    <div class="rule"></div>
+
+    <div class="grid-2">
+      <div class="ladder">
+        <div class="level k3"><span class="tag">K+3</span><i></i><span class="price">OP + 1.5 ATR</span></div>
+        <div class="level k2"><span class="tag">K+2</span><i></i><span class="price">OP + 1.0 ATR</span></div>
+        <div class="level k1"><span class="tag">K+1</span><i></i><span class="price">OP + 0.5 ATR</span></div>
+        <div class="level op"><span class="tag">OP</span><i></i><span class="price">SESSION OPEN</span></div>
+        <div class="level k1"><span class="tag">K-1</span><i></i><span class="price">OP - 0.5 ATR</span></div>
+        <div class="level k2"><span class="tag">K-2</span><i></i><span class="price">OP - 1.0 ATR</span></div>
+        <div class="level k3"><span class="tag">K-3</span><i></i><span class="price">OP - 1.5 ATR</span></div>
+      </div>
+
+      <div>
+        <div class="action-box"><b>K+1 / K-1</b><span>First range step។ មើលថា Price hold/reclaim ឬ reject បន្ទាប់ពី closed candle។</span></div>
+        <div class="action-box"><b>K+2 / K-2</b><span>Session បានពង្រីកប្រហែល 1 ATR។ ប្រយ័ត្ន chase ហើយរង់ចាំ pullback/retest។</span></div>
+        <div class="action-box"><b>K+3 / K-3</b><span>Extended range ប្រហែល 1.5 ATR។ ជា risk/extreme context មិនមែន reversal guarantee ទេ។</span></div>
+        <div class="action-box"><b>NEXT TARGET</b><span>K-Trend បង្ហាញ Level បន្ទាប់តាម regime ប៉ុន្តែមិនបង្កើត trade direction ដោយខ្លួនឯងទេ។</span></div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:18px">បង្ហាញបែបនេះ ត្រូវធ្វើអ្វី?</h3>
+    <table>
+      <thead><tr><th>ទីតាំង Price</th><th>អត្ថន័យ</th><th>ការឆ្លើយតបសមស្រប</th></tr></thead>
+      <tbody>
+        <tr><td>លើ K+1</td><td>Bullish extension</td><td>កុំ chase; រង់ចាំ pullback ទៅ zone និង bullish reclaim។</td></tr>
+        <tr><td>ជិត K+2/K+3</td><td>Upper range extended</td><td>សង្កេត rejection ឬ strong close-through; មិន Sell ដោយ Level តែឯង។</td></tr>
+        <tr><td>ក្រោម K-1</td><td>Bearish extension</td><td>កុំ chase; រង់ចាំ pullback ទៅ resistance និង bearish rejection។</td></tr>
+        <tr><td>ជិត K-2/K-3</td><td>Lower range extended</td><td>សង្កេត reclaim ឬ strong close-through; មិន Buy ដោយ Level តែឯង។</td></tr>
+        <tr><td>ជុំវិញ OP</td><td>Session balance/reset</td><td>រង់ចាំ direction ជាមួយ MLP និង Diamond confirmation។</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout" style="margin-top:14px">
+      <strong>ATR មិនថេរ:</strong> K-Level អាចផ្លាស់ប្ដូរពេល Session/Daily history ប្ដូរ។ ប្រើ Level ដែល Tool បង្ហាញបច្ចុប្បន្ន ហើយកុំចងចាំលេខចាស់សម្រាប់ថ្ងៃថ្មី។
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / K-Range Map</span><span>04</span></div>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">04 / DIAMOND LINE</div>
+    <h2>របៀបមើល DL SUP និង DL RES</h2>
+    <div class="rule"></div>
+
+    <div class="grid-2">
+      <div class="card cyan-top">
+        <span class="pill cyan-pill">DL SUP / BUY KEY ZONE</span>
+        <h3>Support context</h3>
+        <div class="candle-demo">
+          <div class="zone"></div>
+          <i class="candle c1"></i><i class="candle red c2"></i><i class="candle c3"></i><i class="candle c4"></i>
+        </div>
+        <ul class="clean">
+          <li>ល្អ: Price test zone ហើយ closed candle reclaim/hold លើ zone។</li>
+          <li>រង់ចាំ: Status `TESTED` ប៉ុន្តែ `MTF Agreement` មិនទាន់បាន។</li>
+          <li>ខ្សោយ: Candle បិទក្រោម zone ជាបន្តបន្ទាប់ ឬ structure ខូច។</li>
+        </ul>
+      </div>
+      <div class="card orange-top">
+        <span class="pill orange-pill">DL RES / SELL KEY ZONE</span>
+        <h3>Resistance context</h3>
+        <div class="candle-demo sell">
+          <div class="zone"></div>
+          <i class="candle c1"></i><i class="candle c2"></i><i class="candle red c3"></i><i class="candle red c4"></i>
+        </div>
+        <ul class="clean">
+          <li>ល្អ: Price test zone ហើយ closed candle reject/hold ក្រោម zone។</li>
+          <li>រង់ចាំ: Zone ថ្មី ប៉ុន្តែ confirmation timeframe មិនទាន់ស្រប។</li>
+          <li>ខ្សោយ: Candle បិទលើ zone ជាបន្តបន្ទាប់ ឬ structure ត្រូវបាន reclaim។</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 style="margin-top:18px">Status ដែលឃើញញឹកញាប់</h3>
+    <table>
+      <thead><tr><th>Status</th><th>មានន័យ</th><th>ត្រូវធ្វើ</th></tr></thead>
+      <tbody>
+        <tr><td><strong>FRESH</strong></td><td>Zone ទើបកើត មិនទាន់ត្រូវ Test ច្បាស់។</td><td>ដាក់ក្នុង Watch; កុំចូលមុន Price មកដល់។</td></tr>
+        <tr><td><strong>TESTED</strong></td><td>Price បានប៉ះ Zone ប៉ុន្តែមិនស្មើ Confirm។</td><td>រង់ចាំ rejection/reclaim និង MTF Agreement។</td></tr>
+        <tr><td><strong>WAITING CONFIRMATION</strong></td><td>Location ត្រឹមត្រូវ ប៉ុន្តែ Gate មួយចំនួនមិនទាន់ជាប់។</td><td>មិន force entry; រង់ចាំ closed candle បន្ទាប់។</td></tr>
+        <tr><td><strong>CONFIRMED</strong></td><td>Context និង confirmation frames បានស្របតាម Engine។</td><td>ពិនិត្យ risk/news/data មុនសម្រេចចិត្តផ្ទាល់ខ្លួន។</td></tr>
+        <tr><td><strong>INVALIDATED</strong></td><td>Price action បានបំផ្លាញ Zone condition។</td><td>បោះបង់ idea នោះ ហើយរង់ចាំ Diamond cycle ថ្មី។</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout red-callout" style="margin-top:14px">
+      <strong>Grade/Score មិនមែន Win Rate:</strong> ឧទាហរណ៍ Grade B / 75% គឺ Quality score នៃ evidence សម្រាប់ Zone មួយ មិនមែនមានន័យថាឈ្នះ 75% ឬត្រូវចូលភ្លាមទេ។
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / Diamond Line</span><span>05</span></div>
+  </section>
+
+  <section class="page dark">
+    <div class="eyebrow">05 / YOUR SCREEN EXAMPLE</div>
+    <h2>រូបនេះចេញបែបនេះ ត្រូវអានដូចម្ដេច?</h2>
+    <div class="rule"></div>
+
+    <div class="grid-2">
+      <div class="ladder">
+        <div class="level k3"><span class="tag">K+3</span><i></i><span class="price">67694.36</span></div>
+        <div class="level k2"><span class="tag">K+2</span><i></i><span class="price">66881.41</span></div>
+        <div class="level current"><span class="tag">PRICE</span><i></i><span class="price">66246.41</span></div>
+        <div class="level k1"><span class="tag">K+1</span><i></i><span class="price">66068.46</span></div>
+        <div class="level op"><span class="tag">OP</span><i></i><span class="price">65255.51</span></div>
+        <div class="level dls"><span class="tag">DL SUP</span><i></i><span class="price">65128.91</span></div>
+        <div class="level mlp"><span class="tag">MLP</span><i></i><span class="price">64989.03</span></div>
+        <div class="level pivot"><span class="tag">PIVOT</span><i></i><span class="price">64718.17</span></div>
+        <div class="level k1"><span class="tag">K-1</span><i></i><span class="price">64442.56</span></div>
+      </div>
+
+      <div>
+        <div class="action-box"><b>LOCATION</b><span>PRICE 66246.41 នៅលើ OP និង MLP ដូច្នេះ Session context គឺ bullish។</span></div>
+        <div class="action-box"><b>EXTENSION</b><span>PRICE នៅលើ K+1 និងក្រោម K+2។ ទីផ្សារបានពង្រីកឡើងរួច ដូច្នេះមិនគួរ chase Buy ខ្ពស់។</span></div>
+        <div class="action-box"><b>DIAMOND</b><span>DL SUP 65128.91 នៅឆ្ងាយក្រោម Price ហើយ State = TESTED។ វាជា support map មិនមែន entry នៅ Price បច្ចុប្បន្ន។</span></div>
+        <div class="action-box"><b>NEXT</b><span>`MTF Agreement` មានន័យថា Engine នៅរង់ចាំ 15M/5M សម្រាប់ Scalp ឬ 4H/1H សម្រាប់ Swing។</span></div>
+      </div>
+    </div>
+
+    <div class="scenario-summary">
+      <div><b>BIAS</b><span>Bullish session context</span></div>
+      <div><b>STATE</b><span>Waiting for confirmation</span></div>
+      <div><b>ACTION</b><span>Observe; do not chase</span></div>
+    </div>
+
+    <h3 style="margin-top:16px">ផែនការអានបន្ទាប់</h3>
+    <table>
+      <thead><tr><th>បើ Price...</th><th>អ្វីកំពុងកើត</th><th>អ្វីដែលត្រូវពិនិត្យ</th></tr></thead>
+      <tbody>
+        <tr><td>Pullback មក K+1</td><td>Retest នៃ first range step</td><td>រក bullish reclaim និង Diamond/MTF agreement; កុំទាយមុន close។</td></tr>
+        <tr><td>បិទលើ K+2</td><td>Extension បន្ត</td><td>ពិនិត្យ strong close + follow-through; K+3 ជា map level បន្ទាប់ មិនមែន TP command។</td></tr>
+        <tr><td>Reject ពី K+2</td><td>Upper range reaction</td><td>មើលថា Price រក្សា K+1 បានឬអត់; rejection តែមួយមិនទាន់ជា Sell setup។</td></tr>
+        <tr><td>ធ្លាក់ក្រោម OP/MLP</td><td>Bullish session context ខ្សោយ</td><td>បញ្ឈប់ bullish assumption ហើយរង់ចាំ map បង្កើត direction ថ្មី។</td></tr>
+        <tr><td>បិទក្រោម DL SUP</td><td>Diamond support អាច invalid</td><td>កុំបន្តប្រើ Zone ចាស់; មើល History/Engine state សម្រាប់ invalidation។</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout" style="margin-top:12px">
+      <strong>សេចក្ដីសន្និដ្ឋានរូបនេះ:</strong> Trend context ឡើង ប៉ុន្តែ Price បានឡើងលើ K+1 រួច ហើយ Tool នៅបង្ហាញ `Waiting for Diamond Confirmation`។ សកម្មភាពសមស្របគឺរង់ចាំ pullback ឬ closed-candle confirmation មិនមែនចូលភ្លាមៗទេ។
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / Screen Walkthrough</span><span>06</span></div>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">06 / DATA &amp; ENGINE STATES</div>
+    <h2>បើ Tool បង្ហាញ Status ផ្សេងៗ ត្រូវធ្វើអ្វី?</h2>
+    <div class="rule"></div>
+
+    <div class="card" style="padding:0; overflow:hidden">
+      <div class="status-row" style="background:#e7edf5; font-weight:700"><span>Status</span><span>អត្ថន័យ</span><span>ការឆ្លើយតប</span></div>
+      <div class="status-row ok"><span class="status">FEED MATCHED</span><span>Chart និង Engine ប្រើ provider/symbol ស្របគ្នា។</span><span>អាចបន្ត Data check ផ្សេងទៀត។</span></div>
+      <div class="status-row ok"><span class="status">OHLC CLEAN</span><span>Candle structure មិនឃើញ error សំខាន់។</span><span>រង់ចាំ completed candle សម្រាប់ confirmation។</span></div>
+      <div class="status-row wait"><span class="status">SCANNING CANDLE</span><span>Engine កំពុងពិនិត្យ Candle ថ្មី។</span><span>រង់ចាំ; កុំ refresh ច្រើនដង។</span></div>
+      <div class="status-row wait"><span class="status">WAITING MTF</span><span>Context និង confirmation timeframe មិនទាន់ស្រប។</span><span>មិន force entry; រង់ចាំ Candle បន្ទាប់។</span></div>
+      <div class="status-row wait"><span class="status">SYNCING</span><span>History/live candle កំពុងធ្វើ synchronization។</span><span>រង់ចាំ Sync ចប់ មុនអាន Level។</span></div>
+      <div class="status-row stop"><span class="status">UNMATCHED FEED</span><span>Chart និង analysis source មិនស្របគ្នា។</span><span>Research only; កុំប្រើជាសេចក្ដីសម្រេច។</span></div>
+      <div class="status-row stop"><span class="status">DATA LOCK</span><span>History មិនគ្រប់ ឬ feed trust gate មិនបាន។</span><span>ឈប់អាន Signal; ពិនិត្យ connection/settings។</span></div>
+      <div class="status-row stop"><span class="status">STALE / GAP</span><span>Candle ចាស់ ឬមាន gap រវាង history និង live price។</span><span>Retry sync ហើយរង់ចាំ FEED MATCHED។</span></div>
+      <div class="status-row stop"><span class="status">NEWS LOCK</span><span>មាន high-impact event ដែល Engine បាន lock entry ថ្មី។</span><span>រង់ចាំ event និង volatility ស្ងប់។</span></div>
+    </div>
+
+    <div class="grid-2" style="margin-top:16px">
+      <div class="card green-top">
+        <h3>ពេលអាចអាន Panel</h3>
+        <span class="pill green-pill">FEED MATCHED</span>
+        <span class="pill green-pill">OHLC CLEAN</span>
+        <span class="pill green-pill">REAL</span>
+        <ul class="checklist">
+          <li>Price និង Candle time ស្របទីផ្សារ</li>
+          <li>Timeframe ដែលជ្រើសបាន load ចប់</li>
+          <li>Diamond status មិនមែន Data Check Required</li>
+          <li>Candle confirmation បានបិទរួច</li>
+        </ul>
+      </div>
+      <div class="card red-top">
+        <h3>ពេលត្រូវឈប់អាន</h3>
+        <span class="pill red-pill">DATA LOCK</span>
+        <span class="pill red-pill">UNMATCHED</span>
+        <span class="pill yellow-pill">SYNCING</span>
+        <ul class="checklist">
+          <li>PRICE មិនដូច provider បច្ចុប្បន្ន</li>
+          <li>Chart history បាត់ ឬ gap ធំ</li>
+          <li>K-Level/OP/MLP មិនទាន់ Ready</li>
+          <li>Engine បង្ហាញ Waiting for matched candles</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout cyan-callout" style="margin-top:14px">
+      <strong>Timeframe change:</strong> ពេលប្ដូរ 5M/15M/1H/4H សូមរង់ចាំ Transition និង Candle load ចប់។ កុំអាន Level ចាស់ក្នុងពេល Screen នៅ `SYNCING`។
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / Status Guide</span><span>07</span></div>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">07 / QUICK REFERENCE</div>
+    <h2>Checklist មុនប្រើ Key Levels</h2>
+    <div class="rule"></div>
+
+    <div class="grid-2">
+      <div class="card green-top">
+        <h3>ត្រូវពិនិត្យតាមលំដាប់</h3>
+        <ol>
+          <li>Market ត្រឹមត្រូវ: XAU ឬ BTC។</li>
+          <li>Position ត្រឹមត្រូវ: Scalp ឬ Swing។</li>
+          <li>FEED MATCHED និង OHLC CLEAN។</li>
+          <li>PRICE នៅណាធៀប OP និង MLP។</li>
+          <li>PRICE នៅជំហាន K ណា។</li>
+          <li>DL SUP ឬ DL RES នៅជិត Price ឬអត់។</li>
+          <li>State: FRESH, TESTED, CONFIRMED ឬ INVALIDATED។</li>
+          <li>រង់ចាំ closed candle និង MTF Agreement។</li>
+        </ol>
+      </div>
+      <div class="card red-top">
+        <h3>មិនគួរធ្វើ</h3>
+        <ul class="clean">
+          <li>Buy ព្រោះប៉ះ K-3 តែមួយមុខ។</li>
+          <li>Sell ព្រោះប៉ះ K+3 តែមួយមុខ។</li>
+          <li>ចូលតាម Diamond ដែលមាន State = TESTED ប៉ុណ្ណោះ។</li>
+          <li>គិតថា Grade B 75 = ឈ្នះ 75%។</li>
+          <li>ប្រើ Level ពេល DATA LOCK ឬ UNMATCHED FEED។</li>
+          <li>Chase Price ដែលរត់ឆ្ងាយពី Diamond Zone។</li>
+          <li>សម្រេចពី Candle ដែលកំពុង forming។</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 style="margin-top:18px">សង្ខេប Label</h3>
+    <table>
+      <thead><tr><th>Label</th><th>អានថា</th><th>តួនាទី</th></tr></thead>
+      <tbody>
+        <tr><td>PRICE</td><td>Current displayed close</td><td>ប្រៀបធៀបទៅនឹង Level ផ្សេងៗ</td></tr>
+        <tr><td>OP</td><td>Session Open</td><td>Session direction anchor</td></tr>
+        <tr><td>MLP</td><td>Previous session midline</td><td>Balance/context reference</td></tr>
+        <tr><td>PIVOT</td><td>Previous HLC pivot</td><td>Reaction/context level</td></tr>
+        <tr><td>K+ / K-</td><td>ATR range steps</td><td>Volatility extension map</td></tr>
+        <tr><td>DL SUP</td><td>Diamond Support</td><td>Potential Buy key-zone context</td></tr>
+        <tr><td>DL RES</td><td>Diamond Resistance</td><td>Potential Sell key-zone context</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout" style="margin-top:14px">
+      <strong>Risk Notice:</strong> Tool និង Level ទាំងអស់ជាឧបករណ៍វិភាគ និងរៀបចំ Market Context។ វាមិនធានាលទ្ធផល មិនដាក់ Order ជំនួស User និងមិនជំនួស position sizing, invalidation និង risk management ផ្ទាល់ខ្លួនទេ។
+    </div>
+
+    <div class="big-rule">
+      <strong>Data -> Location -> Zone -> Confirmation -> Risk</strong>
+      <span>អានតាមលំដាប់នេះ ដើម្បីកុំអោយ Level ច្រើនធ្វើអោយច្រឡំ។</span>
+    </div>
+
+    <div class="footer"><span>SH Market Analyzer / Key Levels User Guide</span><span>08</span></div>
+  </section>
+
+</body>
+</html>

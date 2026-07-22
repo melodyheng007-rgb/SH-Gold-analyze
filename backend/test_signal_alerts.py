@@ -53,6 +53,8 @@ class ClosedCandleAlertsTests(unittest.TestCase):
         second = self.alerts.record(analysis(), "15M")
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(first["priority"], "ACTION")
+        self.assertTrue(first["is_new"])
+        self.assertFalse(second["is_new"])
         listed = self.alerts.list("XAUUSD")
         self.assertEqual(listed["stats"]["total"], 1)
         self.assertEqual(listed["stats"]["unread"], 1)

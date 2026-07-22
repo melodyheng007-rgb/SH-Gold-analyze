@@ -19,6 +19,9 @@ class DiamondAutoEntryEngine:
         session = session_context or analysis.get("session_framework") or {}
         news = news_context or analysis.get("news_intelligence") or {}
         regime = analysis.get("market_regime") or {}
+        smr = analysis.get("smr_model") or zones.get("smr_model") or {}
+        smt = analysis.get("smt_model") or zones.get("smt_model") or {}
+        dual_core = analysis.get("diamond_timeframe_model") or zones.get("diamond_timeframe_model") or {}
         plan = analysis.get("trade_plan") or {}
         signal = analysis.setdefault("signal", {})
         trust = analysis.get("trust_gate") or {}
@@ -50,8 +53,26 @@ class DiamondAutoEntryEngine:
         max_live_chase_atr = 0.35 if symbol == "XAUUSD" else 0.45
         minimum_risk_reward = 1.8 if symbol == "XAUUSD" else self.MIN_RISK_REWARD
         regime_gate = str(regime.get("execution_gate") or "OBSERVE").upper()
+        smr_gate = str(smr.get("execution_gate") or "WATCH").upper()
+        smr_reason = str(smr.get("next_trigger") or "Wait for the SMR timing guard to clear.")
+        dual_core_gate = str(dual_core.get("execution_gate") or "WATCH").upper()
+        dual_core_reason = str(dual_core.get("next_trigger") or "Wait for 5M / 1H core alignment.")
+        smt_direction = str(smt.get("direction") or "WAIT").upper()
+        smt_confidence = int(smt.get("confidence") or 0)
+        if smr_gate == "WAIT_SESSION":
+            smr_reason = f"SMR session: {smr_reason}"
+        elif smr_gate == "BLOCK_CONFLICT":
+            smr_reason = f"SMR conflict: {smr_reason}"
 
         direction = str(plan.get("direction") or "WAIT").upper()
+        smt_conflict = bool(
+            smt.get("status") == "READY"
+            and str(smt.get("execution_gate") or "NEUTRAL").upper() == "DIVERGENCE_READY"
+            and smt_confidence >= 66
+            and smt_direction in {"BUY", "SELL"}
+            and direction in {"BUY", "SELL"}
+            and smt_direction != direction
+        )
         zone_side = str(primary.get("entry_side") or "WAIT").upper()
         expected_htf = "BULLISH" if direction == "BUY" else "BEARISH" if direction == "SELL" else "WAIT"
         htf_bias = str(htf.get("bias") or analysis.get("bias") or "WAIT").upper()
@@ -139,6 +160,30 @@ class DiamondAutoEntryEngine:
             self._check("htf", "HTF direction", htf_bias == expected_htf, f"1D/4H direction must be {expected_htf.lower()}."),
             self._check("confirmation", "Closed-candle confirmation", confirmation_ready, confirmation.get("reason") or "Wait for 5M closed-candle confirmation."),
             self._check("session", "Session and K-Trend", session_aligned and not bool(session.get("range_extension")) and k_trend_aligned, "Session position and confirmed K-Trend must agree."),
+            *([
+                self._check(
+                    "smr_timing",
+                    "SMR timing and conflict guard",
+                    smr_gate not in {"WAIT_SESSION", "BLOCK_CONFLICT"},
+                    smr_reason,
+                )
+            ] if smr else []),
+            *([
+                self._check(
+                    "smt_confirmation",
+                    "SMT companion conflict guard",
+                    not smt_conflict,
+                    smt.get("reason") or "Wait until the synchronized companion market no longer conflicts.",
+                )
+            ] if smt else []),
+            *([
+                self._check(
+                    "dual_core",
+                    "5M / 1H Dual-Core validation",
+                    dual_core_gate not in {"BLOCK_CONFLICT", "WAIT_VOLATILITY", "WAIT_SESSION"},
+                    dual_core_reason,
+                )
+            ] if dual_core else []),
             self._check(
                 "regime_location",
                 "Regime and anti-chase location",
@@ -179,6 +224,19 @@ class DiamondAutoEntryEngine:
             "minimum_risk_reward": minimum_risk_reward,
             "regime_gate": regime_gate,
             "location_guard": regime.get("location_guard") or {},
+            "smr_state": smr.get("pattern_state"),
+            "smr_score": smr.get("score"),
+            "smr_session": (smr.get("session") or {}).get("name"),
+            "smr_execution_gate": smr_gate if smr else None,
+            "smt_state": smt.get("state"),
+            "smt_direction": smt_direction if smt else None,
+            "smt_confidence": smt_confidence if smt else None,
+            "smt_execution_gate": "BLOCK_CONFLICT" if smt_conflict else "NEUTRAL",
+            "dual_core_state": dual_core.get("state"),
+            "dual_core_score": dual_core.get("score"),
+            "dual_core_grade": dual_core.get("grade"),
+            "dual_core_focus_timeframe": dual_core.get("focus_timeframe"),
+            "dual_core_execution_gate": dual_core_gate if dual_core else None,
             "stop_loss": stop,
             "take_profit_levels": targets,
             "checks": checks,
@@ -305,6 +363,15 @@ class DiamondAutoEntryEngine:
             return "WAITING_DIAMOND"
         if failed == "regime_location":
             return "WAITING_LOCATION"
+        if failed == "smr_timing":
+            return "WAITING_SESSION" if any(
+                item.get("id") == "smr_timing" and "session" in str(item.get("reason") or "").lower()
+                for item in checks
+            ) else "WAITING_SMR"
+        if failed == "smt_confirmation":
+            return "WAITING_SMT"
+        if failed == "dual_core":
+            return "WAITING_DUAL_CORE"
         if failed == "news":
             return "NEWS_LOCKED"
         return "WAITING_CONFLUENCE"

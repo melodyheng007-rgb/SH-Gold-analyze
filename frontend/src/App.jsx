@@ -70,6 +70,7 @@ import {
   getMarketNewsCalendar,
   getMarketOverview,
   getMarketSignalView,
+  getTelegramAlertSettings,
   getOverlayStatus,
   getProviderCredentials,
   getProviderStatus,
@@ -92,13 +93,15 @@ import {
   toggleTestMode,
   uploadCsvForBacktest,
   verifyOandaFeed,
+  saveTelegramAlertSettings,
+  testTelegramAlert,
   acknowledgeMarketAlert,
 } from './api.js'
 import { API_BASE_URL } from './config/api.js'
 import { createMenuActions, groupMenuActions } from './actions/menuActions.js'
 import { safeArray, safeObject, safePrice, safeText } from './utils/safeFormat.js'
 import { mergeChartDelta } from './utils/chartDelta.js'
-import { readChartSnapshot, writeChartSnapshot } from './utils/chartSnapshotCache.js'
+import { isIndicatorSnapshotReady, readChartSnapshot, writeChartSnapshot } from './utils/chartSnapshotCache.js'
 import {
   diamondHistoricalScore,
   diamondMarkerKind,
@@ -122,8 +125,8 @@ function loadChartEngine() {
 
 const TOOLBAR_TIMEFRAMES = ['1M', '5M', '15M', '1H', '4H', '1D']
 const TRADING_STYLES = {
-  SCALPING: { label: 'Scalp', timeframes: '5M / 15M', executionTimeframe: '5M' },
-  SWING: { label: 'Swing', timeframes: '1H / 4H', executionTimeframe: '1H' },
+  SCALPING: { label: '5M', timeframes: 'Scalp', executionTimeframe: '5M' },
+  SWING: { label: '1H', timeframes: 'Intraday / Swing', executionTimeframe: '1H' },
 }
 const MARKET_ASSETS = {
   XAUUSD: { label: 'Gold', tradingViewSymbol: 'OANDA:XAUUSD' },
@@ -132,6 +135,7 @@ const MARKET_ASSETS = {
 const MENU_GROUP_ICONS = {
   Chart: BarChart3,
   Feed: ShieldCheck,
+  Alerts: Bell,
   Data: Database,
   Analysis: Activity,
   System: SlidersHorizontal,
@@ -145,8 +149,8 @@ const CHART_MODES = {
 const NO_HISTORY_MESSAGE = 'No candle data available. Start live builder or import recent history.'
 const GAP_MESSAGE = 'History gap detected. Live price is not aligned with local history.'
 const FULL_ANALYSIS_MESSAGE = 'Full analysis requires recent 1D, 4H, 1H, 15M, and 5M candle history.'
-const APP_VERSION = 'V3.8.1'
-const APP_TITLE = 'SH Market Analyzer V3.8.1 - Adaptive Diamond Intelligence'
+const APP_VERSION = 'V3.8.5'
+const APP_TITLE = 'SH Market Analyzer V3.8.5 - Adaptive Diamond Intelligence'
 const DEFAULT_LOCKED_MODE = {
   locked_mode: 'NO_DATA_MODE',
   data_mode: 'NO_DATA_MODE',
@@ -575,6 +579,10 @@ function chartSnapshotCandleCount(chartData) {
   return active.length || safeArray(chartData?.candles).length
 }
 
+function isCandleSyncNotice(value) {
+  return /candles are still synchronizing|candle synchronization paused|cached candles loaded/i.test(String(value || ''))
+}
+
 function analysisSnapshotSignature(analysis, automation) {
   const plan = safeObject(analysis?.trade_plan)
   const decision = safeObject(analysis?.decision_quality)
@@ -762,7 +770,7 @@ function SymbolBadge({ latestPrice, asset = 'XAUUSD' }) {
   const config = MARKET_ASSETS[asset] || MARKET_ASSETS.XAUUSD
   return (
     <div className="symbol-badge">
-      <span>SH Market Analyzer <b>V3.8</b></span>
+      <span>SH Market Analyzer <b>V3.8.5</b></span>
       <div><strong>{asset}</strong><em>{config.label}</em></div>
       <p>{asPrice(latestPrice)}</p>
     </div>
@@ -1283,19 +1291,12 @@ function deriveSignalViewLevels(candles, overlays, analysis, sessionFramework, k
   const last = candles[candles.length - 1]
   const ranges = candles.slice(-14).map(candle => Math.abs(Number(candle.high) - Number(candle.low))).filter(Number.isFinite)
   const atr = ranges.length ? ranges.reduce((total, value) => total + value, 0) / ranges.length : 0
-  const recent = candles.slice(-48)
-  const high = Math.max(...recent.map(candle => Number(candle.high)))
-  const low = Math.min(...recent.map(candle => Number(candle.low)))
-  const midpointValue = (high + low) / 2
   const overlayItems = safeObject(overlays?.overlays)
   const pivot = Number(overlayItems?.pivot_line?.price)
-  const plan = safeObject(analysis?.trade_plan)
-  const decisionQuality = safeObject(analysis?.decision_quality)
-  const planVisible = decisionPlanVisible(decisionQuality)
-  const targets = safeArray(plan.take_profit_levels)
   const sessionLevels = safeObject(sessionFramework?.levels)
   const hasSessionLevels = sessionFramework?.status === 'READY' && Number.isFinite(Number(sessionLevels.op))
-  const levels = hasSessionLevels ? [
+  const currentPrice = Number(last.close)
+  const sessionCandidates = [
     { key: 'k_plus_3', label: 'K+3', price: Number(sessionLevels.k_plus_3), color: '#f4ea2a', style: 'dashed' },
     { key: 'k_plus_2', label: 'K+2', price: Number(sessionLevels.k_plus_2 ?? sessionLevels.dr_plus_2), color: '#f4c95d', style: 'dashed' },
     { key: 'k_plus_1', label: 'K+1', price: Number(sessionLevels.k_plus_1 ?? sessionLevels.dr_plus_1), color: '#76ff03', style: 'dashed' },
@@ -1305,28 +1306,35 @@ function deriveSignalViewLevels(candles, overlays, analysis, sessionFramework, k
     { key: 'k_minus_1', label: 'K-1', price: Number(sessionLevels.k_minus_1 ?? sessionLevels.dr_minus_1), color: '#76ff03', style: 'dashed' },
     { key: 'k_minus_2', label: 'K-2', price: Number(sessionLevels.k_minus_2 ?? sessionLevels.dr_minus_2), color: '#f4c95d', style: 'dashed' },
     { key: 'k_minus_3', label: 'K-3', price: Number(sessionLevels.k_minus_3), color: '#f4ea2a', style: 'dashed' },
-    { key: 'price', label: 'PRICE', price: Number(last.close), color: '#a1a1aa', style: 'solid' },
-  ] : [
+  ].filter(level => Number.isFinite(level.price) && level.price > 0)
+  const nearestKAbove = sessionCandidates
+    .filter(level => level.key.startsWith('k_') && level.price > currentPrice)
+    .sort((left, right) => left.price - right.price)[0]
+  const nearestKBelow = sessionCandidates
+    .filter(level => level.key.startsWith('k_') && level.price < currentPrice)
+    .sort((left, right) => right.price - left.price)[0]
+  const nearestSessionAnchors = sessionCandidates
+    .filter(level => !level.key.startsWith('k_'))
+    .sort((left, right) => Math.abs(left.price - currentPrice) - Math.abs(right.price - currentPrice))
+    .slice(0, 2)
+  const levels = hasSessionLevels ? [
+    nearestKAbove,
+    ...nearestSessionAnchors,
+    nearestKBelow,
+    { key: 'price', label: 'PRICE', price: currentPrice, color: '#a1a1aa', style: 'solid' },
+  ].filter(Boolean) : [
     { key: 'range_plus', label: 'R+1', price: Number(last.close) + atr * 1.5, color: '#76ff03', style: 'dashed' },
     { key: 'price', label: 'PRICE', price: Number(last.close), color: '#a1a1aa', style: 'solid' },
     { key: 'open', label: 'OPEN', price: Number(last.open), color: '#f8fafc', style: 'dotted' },
-    { key: 'mid', label: 'MID', price: midpointValue, color: '#f5e875', style: 'dotted' },
     { key: 'pivot', label: 'PIVOT', price: pivot, color: '#22d3ee', style: 'solid' },
     { key: 'range_minus', label: 'R-1', price: Number(last.close) - atr * 1.5, color: '#76ff03', style: 'dashed' },
-    { key: 'range_minus_2', label: 'R-2', price: Number(last.close) - atr * 3, color: '#f4ea2a', style: 'dashed' },
   ]
-  if (planVisible && plan.status && plan.status !== 'NO_VALID_SETUP') {
-    levels.push(
-      { key: 'entry', label: 'ENTRY', price: Number(plan.entry_price), color: '#f8fafc', style: 'dashed' },
-      { key: 'stop', label: 'SL', price: Number(plan.stop_loss), color: '#fb7185', style: 'solid' },
-      { key: 'target', label: 'TP1', price: Number(targets[0]), color: '#4ade80', style: 'solid' },
-    )
-  }
   const diamondZone = safeObject(keyZones?.primary_zone)
   const visibleDiamondFloor = diamondVisibleFloor(keyZones, diamondZone)
   if (
     keyZones?.status === 'READY'
     && keyZones?.diamond_display_status !== 'NO_QUALIFIED_DIAMOND'
+    && diamondZone.strategy_confirmed_origin === true
     && diamondZone.display_as_diamond !== false
     && Number(diamondZone.diamond_score ?? keyZones?.diamond_score ?? 0) >= visibleDiamondFloor
     && Number.isFinite(Number(diamondZone.line))
@@ -1346,7 +1354,12 @@ function deriveSignalViewLevels(candles, overlays, analysis, sessionFramework, k
       hideLeftLabel: true,
     })
   }
-  return levels.filter(level => Number.isFinite(level.price) && level.price > 0)
+  const unique = new Map()
+  levels.filter(level => Number.isFinite(level.price) && level.price > 0).forEach(level => {
+    const key = Math.round(level.price / Math.max(atr * .04, currentPrice * 1e-7))
+    if (!unique.has(key) || level.key === 'price' || level.key === 'diamond_line') unique.set(key, level)
+  })
+  return [...unique.values()]
 }
 
 function crystalMarkerPrice(candle, buy) {
@@ -1404,9 +1417,49 @@ function derivePersistedDiamondMarkers(candles, history, timeframe) {
     .sort((left, right) => Number(left.time) - Number(right.time))
 }
 
+function deriveValidationReplayMarkers(candles, validation, timeframe) {
+  if (!['READY', 'NO_CONFIRMED_EVENTS'].includes(String(validation?.status || '').toUpperCase())) return []
+  const normalizedTimeframe = String(timeframe || '').toUpperCase()
+  const candleByTime = new Map(candles.map(candle => [Number(candle.time), candle]))
+  return safeArray(validation?.replay_zones)
+    .filter(zone => (
+      zone?.strategy_confirmed_origin === true
+      && zone?.display_as_diamond === true
+      && String(zone?.timeframe || '').toUpperCase() === normalizedTimeframe
+    ))
+    .map(zone => {
+      const markerTime = Number(zone.detected_time ?? zone.origin_time)
+      const side = String(zone.entry_side || zone.direction).toUpperCase()
+      const buy = side === 'BUY' || side === 'BULLISH'
+      const markerPrice = crystalMarkerPrice(candleByTime.get(markerTime), buy)
+      if (!Number.isFinite(markerTime) || !Number.isFinite(markerPrice)) return null
+      const score = clampPercent(zone.diamond_score)
+      const gradeLabel = diamondGradeLabel(zone.diamond_grade, score, diamondVisibleFloor(zone))
+      const outcome = String(zone.outcome || 'WATCHING').replaceAll('_', ' ')
+      return {
+        ...zone,
+        id: `engine-replay-${zone.zone_key || zone.zone_id}`,
+        time: markerTime,
+        marker_price: markerPrice,
+        entry_side: buy ? 'BUY' : 'SELL',
+        marker_kind: 'setup',
+        marker_label: gradeLabel,
+        marker_title: `Engine Replay ${buy ? 'BUY' : 'SELL'} Diamond / ${gradeLabel || 'confirmed setup'} / ${outcome}`,
+        quality_score: score,
+        signal_tier: 'QUALIFIED',
+        verification_status: zone.outcome,
+        persistent: true,
+        engine_replay: true,
+      }
+    })
+    .filter(Boolean)
+    .sort((left, right) => Number(left.time) - Number(right.time))
+}
+
 function deriveCurrentDiamondMarkers(candles, zones) {
   const candleByTime = new Map(candles.map(candle => [Number(candle.time), candle]))
   return safeArray(zones).map(zone => {
+    if (zone?.strategy_confirmed_origin !== true) return null
     const markerTime = Number(zone.time)
     const side = String(zone.entry_side || zone.direction).toUpperCase()
     const buy = side === 'BUY' || side === 'BULLISH'
@@ -1461,7 +1514,7 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
   }[String(timeframe || '15M').toUpperCase()] || 900
   const clusterBars = {
     '1M': 15,
-    '5M': 18,
+    '5M': 24,
     '15M': 12,
     '1H': 8,
     '4H': 5,
@@ -1475,18 +1528,13 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
     .forEach(marker => {
       const side = String(marker.entry_side || marker.direction || '').toUpperCase()
       const time = Number(marker.time)
-      const price = Number(marker.marker_price ?? marker.line)
       const cluster = [...clusters].reverse().find(item => {
-        if (item.side !== side || time - item.startTime > clusterWindow) return false
-        if (!Number.isFinite(price) || !Number.isFinite(item.anchorPrice)) return true
-        const scale = Math.max(Math.abs(price), Math.abs(item.anchorPrice), 1)
-        return Math.abs(price - item.anchorPrice) / scale <= 0.0018
+        return item.side === side && time - item.startTime <= clusterWindow
       })
       if (!cluster) {
         clusters.push({
           side,
           startTime: time,
-          anchorPrice: price,
           marker,
           count: 1,
           hasPersistent: Boolean(marker.persistent),
@@ -1498,7 +1546,7 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
       cluster.hasPersistent = cluster.hasPersistent || Boolean(marker.persistent)
     })
 
-  return clusters.map(cluster => ({
+  const compacted = clusters.map(cluster => ({
     ...cluster.marker,
     persistent: cluster.hasPersistent,
     cluster_count: cluster.count,
@@ -1506,6 +1554,32 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
       ? `${cluster.marker.marker_title || 'Diamond zone'} / strongest of ${cluster.count} nearby observations`
       : cluster.marker.marker_title,
   })).sort((left, right) => Number(left.time) - Number(right.time))
+
+  const flipWindow = timeframeSeconds * ({
+    '1M': 6,
+    '5M': 5,
+    '15M': 3,
+    '1H': 2,
+    '4H': 1,
+    '1D': 1,
+  }[String(timeframe || '15M').toUpperCase()] || 3)
+  return compacted.reduce((selected, marker) => {
+    const previous = selected[selected.length - 1]
+    if (!previous) return [marker]
+    const previousSide = String(previous.entry_side || previous.direction || '').toUpperCase()
+    const side = String(marker.entry_side || marker.direction || '').toUpperCase()
+    if (side !== previousSide && Number(marker.time) - Number(previous.time) <= flipWindow) {
+      const preferred = preferMarker(previous, marker)
+      selected[selected.length - 1] = {
+        ...preferred,
+        cluster_count: Number(previous.cluster_count || 1) + Number(marker.cluster_count || 1),
+        marker_title: `${preferred.marker_title || 'Diamond zone'} / strongest nearby reversal proof`,
+      }
+      return selected
+    }
+    selected.push(marker)
+    return selected
+  }, [])
 }
 
 function MtfMarketMap({ snapshot }) {
@@ -1559,7 +1633,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
     <section className="confidence-engine" aria-label="Confidence Engine diagnostics and strategy governance">
       <header>
         <span><ShieldCheck size={14} /> Confidence Engine</span>
-        <strong>V3.8</strong>
+        <strong>V3.8.5</strong>
         <em className={summary.tone}>{stageLabel(summary.status)}</em>
         <small>{summary.readinessPassed}/{summary.readinessTotal} execution gates ready</small>
       </header>
@@ -1650,7 +1724,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
           </article>
           <article className="governance-card">
             <span>Champion / Challenger</span>
-            <strong>{String(champion.version || 'DIAMOND_V7_ADAPTIVE_ASSET_PROFILE').replace('DIAMOND_', '')} / {String(challenger.version || 'DIAMOND_V7.1_SHADOW').replace('DIAMOND_', '')}</strong>
+            <strong>{String(champion.version || 'DIAMOND_V8_STRONG_TREND_GUARD').replace('DIAMOND_', '')} / {String(challenger.version || 'DIAMOND_V7.1_SHADOW').replace('DIAMOND_', '')}</strong>
             <small>{summary.challengerResolved}/{summary.promotionMinimum} shadow events resolved</small>
             <i><b style={{ width: `${progress}%` }} /></i>
             <em className={promotion.status === 'ELIGIBLE_FOR_MANUAL_REVIEW' ? 'good' : 'warn'}>{stageLabel(promotion.status || 'shadow only')}</em>
@@ -1673,6 +1747,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
 
 function DiamondValidationPanel({ validation, onRun, loading }) {
   const summary = safeObject(validation?.summary)
+  const replay = safeObject(validation?.replay_summary)
   const confidence = safeObject(validation?.sample_confidence)
   const dataRange = safeObject(validation?.data_range)
   const directionRows = safeArray(validation?.segments?.direction)
@@ -1681,19 +1756,16 @@ function DiamondValidationPanel({ validation, onRun, loading }) {
   const status = validation?.status || 'NOT_RUN'
   const isMetric = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   const metric = (value, suffix = '') => isMetric(value) ? `${Number(value).toFixed(suffix ? 1 : 2)}${suffix}` : '-'
-  const rMetric = value => isMetric(value) ? `${Number(value).toFixed(2)}R` : '-'
   const hasRun = ['READY', 'NO_CONFIRMED_EVENTS'].includes(status)
-  const confirmedCount = Number(summary.confirmed_events) || 0
-  const resolvedCount = Number(summary.resolved) || 0
   return (
     <section className="diamond-validation" aria-label="Diamond closed-candle walk-forward validation">
       <header>
-        <span><ShieldCheck size={14} /> Validation Lab</span>
+        <span><ShieldCheck size={14} /> History Engine Replay</span>
         <strong>{String(validation?.engine_version || 'DIAMOND V6.1').replaceAll('_', ' ')}</strong>
         <em className={confidence.status === 'EVIDENCE_READY' ? 'good' : 'warn'}>{String(confidence.status || status).replaceAll('_', ' ')}</em>
-        <button onClick={onRun} disabled={loading} title="Run matched-provider walk-forward validation">
+        <button onClick={onRun} disabled={loading} title="Analyze chart history with the current Diamond engine">
           <RefreshCw className={loading ? 'spin' : ''} size={13} />
-          <span>{loading ? 'Validating' : hasRun ? 'Run Again' : 'Run Validation'}</span>
+          <span>{loading ? 'Analyzing' : hasRun ? 'Analyze Again' : 'Analyze History'}</span>
         </button>
       </header>
       {hasRun ? (
@@ -1702,8 +1774,8 @@ function DiamondValidationPanel({ validation, onRun, loading }) {
             <div className="validation-sample-note validation-diagnostics">
               <ShieldCheck size={13} />
               <span>
-                <strong>No production entry in this sample.</strong>
-                <small>{failure.interpretation || `${validation?.scan_count ?? 0} historical checkpoints were tested; context and qualified origins are not counted as trades.`}</small>
+                <strong>{Number(replay.strategy_confirmed_setups) > 0 ? `${replay.strategy_confirmed_setups} confirmed setups replayed.` : 'No confirmed strategy setup in this sample.'}</strong>
+                <small>{failure.interpretation || `${validation?.scan_count ?? 0} historical checkpoints were tested; score-only observations were excluded.`}</small>
               </span>
               {finalBlockers.length > 0 && (
                 <div className="validation-blockers" aria-label="Final confirmation blockers">
@@ -1717,11 +1789,11 @@ function DiamondValidationPanel({ validation, onRun, loading }) {
             </div>
           )}
           <div className="validation-metrics">
-            <p><span>Resolved</span><strong>{summary.resolved ?? 0}</strong><small>{summary.confirmed_events ?? 0} confirmed</small></p>
-            <p><span>Win Rate</span><strong>{metric(summary.win_rate, '%')}</strong><small>{summary.wins ?? 0}W / {summary.losses ?? 0}L</small></p>
-            <p><span>Expectancy</span><strong className={Number(summary.expectancy_r) > 0 ? 'good' : Number(summary.expectancy_r) < 0 ? 'bad' : ''}>{rMetric(summary.expectancy_r)}</strong><small>Net {confirmedCount ? rMetric(summary.net_r) : '-'}</small></p>
-            <p><span>Profit Factor</span><strong>{summary.profit_factor ?? '-'}</strong><small>DD {resolvedCount ? rMetric(summary.max_drawdown_r) : '-'}</small></p>
-            <p><span>Origins</span><strong>{validation?.qualified_origins ?? 0}</strong><small>{validation?.context_origins ?? 0} context</small></p>
+            <p><span>Setups</span><strong>{replay.strategy_confirmed_setups ?? 0}</strong><small>Strategy confirmed</small></p>
+            <p><span>Respected</span><strong className="good">{replay.respected ?? 0}</strong><small>{metric(replay.respect_rate, '%')} resolved rate</small></p>
+            <p><span>Failed</span><strong className={Number(replay.failed) > 0 ? 'bad' : ''}>{replay.failed ?? 0}</strong><small>{replay.watching ?? 0} watching</small></p>
+            <p><span>Entry Proof</span><strong>{summary.resolved ?? 0}</strong><small>{summary.confirmed_events ?? 0} confirmed</small></p>
+            <p><span>Direction</span><strong>{replay.buy_zones ?? 0} / {replay.sell_zones ?? 0}</strong><small>Buy / Sell</small></p>
             <p><span>Coverage</span><strong>{dataRange.candles ?? 0}</strong><small>{timeframeLabel(validation?.timeframe)}</small></p>
           </div>
           <div className="validation-progress" title={`${confidence.resolved ?? 0} of ${confidence.minimum_evidence_sample ?? 100} resolved events`}>
@@ -1982,6 +2054,11 @@ function setupValidationGates(analysis) {
   const news = safeObject(analysis?.news_intelligence)
   const xauPrecision = safeObject(analysis?.xau_confluence)
   const diamondAutoEntry = safeObject(analysis?.diamond_auto_entry)
+  const smr = safeObject(analysis?.smr_model || analysis?.key_zones?.smr_model)
+  const smrProfile = safeObject(smr.profile)
+  const smrGate = String(smr.execution_gate || 'WATCH').toUpperCase()
+  const dualCore = safeObject(analysis?.diamond_timeframe_model || analysis?.key_zones?.diamond_timeframe_model)
+  const dualCoreGate = String(dualCore.execution_gate || 'WATCH').toUpperCase()
   const kTrend = safeObject(analysis?.session_framework?.k_trend)
   const intendedDirection = String(analysis?.trade_plan?.direction || analysis?.signal?.direction || 'WAIT').toUpperCase()
   const kTrendAligned = kTrend.status === 'READY' && kTrend.confirmation === 'CONFIRMED' && (
@@ -2058,6 +2135,20 @@ function setupValidationGates(analysis) {
       timeframe: '1D - 5M',
       pass: xauPrecision.execution_gate === 'OPEN',
       reason: xauPrecision.next_trigger || 'All XAU engines must agree before execution.',
+    }] : []),
+    ...(smr.status ? [{
+      label: 'SMR Timing Guard',
+      compactLabel: 'SMR',
+      timeframe: smrProfile.execution_timeframe || 'Closed',
+      pass: !['WAIT_SESSION', 'BLOCK_CONFLICT'].includes(smrGate),
+      reason: `${String(smr.pattern_state || smr.status).replaceAll('_', ' ')} / ${smr.next_trigger || 'Monitoring the next completed-candle sequence.'}`,
+    }] : []),
+    ...(dualCore.status ? [{
+      label: 'Diamond Dual-Core',
+      compactLabel: `${dualCore.focus_timeframe || 'Core'} Core`,
+      timeframe: dualCore.focus_timeframe || '5M / 1H',
+      pass: !['BLOCK_CONFLICT', 'WAIT_VOLATILITY', 'WAIT_SESSION'].includes(dualCoreGate),
+      reason: `${String(dualCore.state || dualCore.status).replaceAll('_', ' ')} / ${dualCore.next_trigger || 'Monitoring completed-candle core alignment.'}`,
     }] : []),
     {
       label: 'Diamond Auto Entry',
@@ -2403,18 +2494,23 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
   const primary = safeObject(keyZones?.primary_zone)
   const precision = safeObject(xauConfluence)
   const precisionGate = safeObject(keyZones?.precision_gate)
+  const smr = safeObject(keyZones?.smr_model)
+  const smrSession = safeObject(smr.session)
+  const smt = safeObject(keyZones?.smt_model)
+  const dualCore = safeObject(keyZones?.diamond_timeframe_model)
   const primaryScore = Number(primary.diamond_score ?? keyZones?.diamond_score ?? 0)
   const visibleDiamondFloor = diamondVisibleFloor(keyZones, primary)
   if (
     keyZones?.status !== 'READY'
     || keyZones?.diamond_display_status === 'NO_QUALIFIED_DIAMOND'
+    || primary.strategy_confirmed_origin !== true
     || primary.display_as_diamond === false
     || primaryScore < visibleDiamondFloor
     || !primary.line
   ) {
     return (
       <section className="diamond-zone-panel waiting">
-        <header><Diamond size={16} /><span><small>SH Lead Diamond V7</small><strong>Scanning for one qualified Scalp zone</strong></span></header>
+        <header><Diamond size={16} /><span><small>SH Lead Diamond V7</small><strong>Scanning for a confirmed strategy setup</strong></span></header>
       </section>
     )
   }
@@ -2472,6 +2568,18 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
   const roleClass = primary.actionable_entry
     ? 'good'
     : ['INVALIDATED_CONTEXT', 'STALE_NO_RETEST'].includes(primary.display_role) || primary.entry_stage === 'INVALIDATED' ? 'bad' : 'warn'
+  const smrState = String(smr.pattern_state || 'SCANNING').replaceAll('_', ' ')
+  const smrTiming = `${smrState} / ${smrSession.name?.replaceAll('_', ' ') || 'WAITING'}`
+  const smrTone = ['WAIT_SESSION', 'BLOCK_CONFLICT'].includes(String(smr.execution_gate || '').toUpperCase())
+    ? 'bad'
+    : smr.pattern_state === 'CONFIRMED' ? 'good' : 'warn'
+  const smtState = String(smt.state || smt.status || 'WAITING').replaceAll('_', ' ')
+  const smtTone = primary.smt_execution_gate === 'BLOCK_CONFLICT'
+    ? 'bad'
+    : primary.smt_execution_gate === 'CONFIRM' ? 'good' : 'warn'
+  const dualCoreLabel = dualCore.status
+    ? `${dualCore.focus_timeframe || 'Core'} ${dualCore.grade || '-'} ${dualCore.score ?? 0}`
+    : 'Core waiting'
   return (
     <section className={`diamond-zone-panel ${contextTone} ${precision.status === 'READY' ? 'precision' : ''}`} aria-label="SH Diamond Zone strategy context">
       <header>
@@ -2483,8 +2591,9 @@ function DiamondZonePanel({ keyZones, xauConfluence }) {
       <div className="diamond-zone-metrics">
         <p><span>Side</span><strong className={contextTone === 'buy' ? 'good' : 'warn'}>{sideLabel}</strong></p>
         <p><span>Zone Price</span><strong>{asPrice(primary.line)}</strong></p>
-        <p title={`Confidence ${diamondScore || 0}%`}><span>Grade</span><strong>{diamondGrade || '-'} / {diamondScore || 0}%</strong></p>
+        <p title={`Diamond confidence ${diamondScore || 0}%. ${dualCore.next_trigger || 'Dual-Core is warming up.'}`}><span>Quality / Core</span><strong>{diamondGrade || '-'} {diamondScore || 0} / {dualCoreLabel}</strong></p>
         <p title={reasonLabel}><span>Reason</span><strong>{reasonLabel}</strong></p>
+        <p title={`${smr.next_trigger || smrTiming} SMT: ${smt.reason || smtState}`}><span>SMR / SMT</span><strong className={primary.smt_execution_gate ? smtTone : smrTone}>{smrState} / {smtState}</strong></p>
         <p title={entryBlocker}><span>Status</span><strong className={roleClass}>{statusLabel}</strong></p>
       </div>
     </section>
@@ -2543,7 +2652,12 @@ function IntelligenceDock({ activeTab, onTab, collapsed, onToggle, analysis, tra
               <MtfMarketMap snapshot={snapshot} />
             </div>
           )}
-          {activeTab === 'journal' && <SimpleDiamondHistory history={diamondHistory} onReplay={onReplayDiamond} replayKey={replayKey} />}
+          {activeTab === 'journal' && (
+            <div className="proof-dock-stack">
+              <DiamondValidationPanel validation={diamondValidation} onRun={onRunValidation} loading={validationLoading} />
+              <SimpleDiamondHistory history={diamondHistory} onReplay={onReplayDiamond} replayKey={replayKey} />
+            </div>
+          )}
         </div>
       </div>
     </section>
@@ -2626,6 +2740,7 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
       : Array.isArray(keyZones?.visible_zones) ? keyZones.visible_zones : safeArray(keyZones?.zones)
     const visible = sourceZones.filter(zone => (
       zone?.id
+      && zone.strategy_confirmed_origin === true
       && zone.display_as_diamond !== false
       && Number(zone.diamond_score ?? zone.diamond_confidence_score ?? 0) >= visibleDiamondFloor
       && !['INVALIDATED_CONTEXT', 'INTERNAL_REJECTED'].includes(String(zone.display_role || '').toUpperCase())
@@ -2650,6 +2765,10 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     () => derivePersistedDiamondMarkers(candles, diamondHistory, timeframe),
     [candles, diamondHistory, timeframe],
   )
+  const validationReplayMarkers = useMemo(
+    () => deriveValidationReplayMarkers(candles, diamondValidation, timeframe),
+    [candles, diamondValidation, timeframe],
+  )
   const currentDiamondMarkers = useMemo(
     () => deriveCurrentDiamondMarkers(candles, diamondContextZones),
     [candles, diamondContextZones],
@@ -2669,7 +2788,8 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     })),
     ...currentDiamondMarkers,
     ...persistedDiamondMarkers,
-  ], timeframe), [diamondEntryEvents, currentDiamondMarkers, persistedDiamondMarkers, timeframe])
+    ...validationReplayMarkers,
+  ], timeframe), [diamondEntryEvents, currentDiamondMarkers, persistedDiamondMarkers, validationReplayMarkers, timeframe])
   const savedDiamondHistoryCount = useMemo(
     () => safeArray(diamondHistory?.entries).filter(
       entry => String(entry?.timeframe || '').toUpperCase() === String(timeframe || '').toUpperCase(),
@@ -2679,7 +2799,8 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
   const crystalSummary = useMemo(() => ({
     total: crystalMarkers.length,
     saved: savedDiamondHistoryCount,
-  }), [crystalMarkers, savedDiamondHistoryCount])
+    replayed: validationReplayMarkers.length,
+  }), [crystalMarkers, savedDiamondHistoryCount, validationReplayMarkers])
   const primarySignal = keyZones?.entry_event_status === 'CONFIRMED_ENTRY' && diamondEntryEvents.length
     ? diamondEntryEvents[diamondEntryEvents.length - 1]
     : diamondContextZones[0] || null
@@ -2994,12 +3115,12 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
         <div
           className="signal-crystal-guide"
           title="The chart groups nearby Diamonds and keeps the strongest one. Complete evidence remains in History."
-          aria-label={`${crystalSummary.total} grouped Diamond key zones on chart, ${crystalSummary.saved} complete records in history`}
+          aria-label={`${crystalSummary.total} grouped Diamond key zones on chart, ${crystalSummary.replayed} engine replay results`}
         >
           <span className="buy"><Diamond size={11} />Buy Zone</span>
           <span className="sell"><Diamond size={11} />Sell Zone</span>
           <b>{crystalSummary.total} on chart</b>
-          <em>{crystalSummary.saved} in history</em>
+          <em>{crystalSummary.replayed ? `${crystalSummary.replayed} replayed` : `${crystalSummary.saved} saved history`}</em>
         </div>
         <div className="signal-view-timeframes">
           {['5M', '15M', '1H', '4H', '1D'].map(item => (
@@ -3254,12 +3375,17 @@ function AnalysisResultDrawer({ open, onClose, onExport, analysis, lockedMode, d
   const news = safeObject(analysis?.news_intelligence)
   const xauPrecision = safeObject(analysis?.xau_confluence)
   const kTrend = safeObject(analysis?.session_framework?.k_trend)
+  const smr = safeObject(analysis?.smr_model || analysis?.key_zones?.smr_model)
+  const smrSession = safeObject(smr.session)
+  const smt = safeObject(analysis?.smt_model || analysis?.key_zones?.smt_model)
+  const dualCore = safeObject(analysis?.diamond_timeframe_model || analysis?.key_zones?.diamond_timeframe_model)
   const newsEvent = safeObject(news.primary_event || news.next_high_impact_event || news.next_event)
   const primaryDiamondScore = Number(primaryDiamondZone.diamond_score ?? keyZones.diamond_score ?? primaryDiamondZone.diamond_confidence_score ?? 0)
   const visibleDiamondFloor = diamondVisibleFloor(keyZones, primaryDiamondZone, analysis)
   const primaryDiamondGrade = primaryDiamondZone.diamond_grade || keyZones.diamond_grade || diamondGradeFromScore(primaryDiamondScore, false, visibleDiamondFloor)
   const publishedDiamond = Boolean(
     keyZones.diamond_display_status !== 'NO_QUALIFIED_DIAMOND'
+    && primaryDiamondZone.strategy_confirmed_origin === true
     && primaryDiamondZone.display_as_diamond !== false
     && primaryDiamondScore >= visibleDiamondFloor
     && primaryDiamondGrade
@@ -3288,6 +3414,15 @@ function AnalysisResultDrawer({ open, onClose, onExport, analysis, lockedMode, d
     ['Session Position', analysis?.session_framework?.position || signal.session_position || '-'],
     ['K-Range Trend', `${kTrend.regime || '-'} (${kTrend.score ?? 0}) / ${kTrend.confirmation?.replaceAll('_', ' ') || '-'}`],
     ['K-Range Target', `${kTrend.next_target_label || '-'} ${asPrice(kTrend.next_target)}`],
+    ['SMR Model', `${String(smr.pattern_state || smr.status || '-').replaceAll('_', ' ')} / ${smr.score ?? 0}`],
+    ['SMR Timing', `${smrSession.name?.replaceAll('_', ' ') || '-'} (${smrSession.quality || '-'}) / ${smr.execution_gate || '-'}`],
+    ['SMR Next', smr.next_trigger || '-'],
+    ['SMT Companion', `${smt.companion_symbol || '-'} / ${String(smt.state || smt.status || '-').replaceAll('_', ' ')}`],
+    ['SMT Confidence', smt.direction && smt.direction !== 'WAIT' ? `${smt.direction} / ${smt.confidence ?? 0}%` : 'No active divergence'],
+    ['SMT Feed', `${smt.matched_candles ?? 0} matched / ${Math.round(Number(smt.coverage || 0) * 100)}% coverage`],
+    ['Dual-Core', `${dualCore.focus_timeframe || '-'} / ${String(dualCore.state || '-').replaceAll('_', ' ')} / ${dualCore.grade || '-'} ${dualCore.score ?? 0}`],
+    ['Core Agreement', `${dualCore.agreement?.aligned ?? 0}/${dualCore.agreement?.total ?? 0} aligned / ${dualCore.execution_gate || '-'}`],
+    ['Core Next', dualCore.next_trigger || '-'],
     ['Diamond State', publishedDiamond ? keyZones.strategy_state?.replaceAll('_', ' ') || keyZones.directional_bias?.replaceAll('_', ' ') || 'WATCHING' : `Scanning for ${visibleDiamondFloor}+ quality`],
     ['Diamond Line', publishedDiamond ? asPrice(primaryDiamondZone.line) : '-'],
     ['Diamond Grade', publishedDiamond ? `${primaryDiamondGrade} / ${primaryDiamondScore}` : 'Not published'],
@@ -4608,6 +4743,15 @@ function MobileMenuDrawer({
   setOandaEnvironment = () => {},
   onSaveOanda = () => {},
   oandaVerification = null,
+  telegramSettings = null,
+  telegramBotToken = '',
+  setTelegramBotToken = () => {},
+  telegramChatId = '',
+  setTelegramChatId = () => {},
+  telegramEnabled = false,
+  setTelegramEnabled = () => {},
+  telegramVerification = null,
+  onSaveTelegram = () => {},
   providerAlignment = null,
   onUploadCsv = () => {},
   onImportHistory = () => {},
@@ -4617,6 +4761,7 @@ function MobileMenuDrawer({
   const { isAdmin } = useAuth()
   const canManageFeed = isAdmin
   const [settingsGroup, setSettingsGroup] = useState('Analysis')
+  const [replaceTelegramConnection, setReplaceTelegramConnection] = useState(false)
   const oandaCredentialState = status?.settings?.oanda_credential_state || (status?.settings?.oanda_api_token ? 'SAVED' : 'NOT_CONFIGURED')
   const oandaCredentialSaved = Boolean(status?.settings?.oanda_api_token)
   const oandaRestore = status?.oanda_restore || null
@@ -4631,6 +4776,8 @@ function MobileMenuDrawer({
   const saveActiveProvider = onSaveOanda
   const activeVisualSymbol = 'OANDA:XAUUSD'
   const selectedFeedMatched = providerAlignment?.matched === true && providerAlignment?.visual_symbol === activeVisualSymbol
+  const telegramConnectionSaved = Boolean(telegramSettings?.bot_token_saved && telegramSettings?.chat_id_saved)
+  const showTelegramCredentials = !telegramConnectionSaved || replaceTelegramConnection
   const menuActions = createMenuActions({
     'chart.tradingview': () => onChartMode('tradingview'),
     'chart.resetScale': onResetScale,
@@ -4656,8 +4803,12 @@ function MobileMenuDrawer({
       ? { ...section, actions: section.actions.filter(action => ['chart.tradingview', 'system.backendHealth', 'system.clearLocalStorage'].includes(action.id)) }
       : section)
     .filter(section => section.actions.length)
-  const menuGroups = asset === 'XAUUSD' && canManageFeed
-    ? [...baseMenuGroups, { group: 'Feed', actions: [] }]
+  const menuGroups = canManageFeed
+    ? [
+        ...baseMenuGroups,
+        ...(asset === 'XAUUSD' ? [{ group: 'Feed', actions: [] }] : []),
+        { group: 'Alerts', actions: [] },
+      ]
     : baseMenuGroups
   const activeMenuGroup = menuGroups.find(section => section.group === settingsGroup)
     || menuGroups.find(section => section.group === 'Analysis')
@@ -4813,6 +4964,102 @@ function MobileMenuDrawer({
             )}
           </section>
         )}
+        {canManageFeed && activeMenuGroup?.group === 'Alerts' && (
+          <section className="drawer-section provider-config-section telegram-config-section">
+            <h3><Bell size={15} /> Telegram Group Alerts</h3>
+            <div className="provider-config-form">
+              <div className="provider-config-status">
+                <span>Delivery</span>
+                <strong>Confirmed Diamonds</strong>
+                <b className={telegramSettings?.status === 'READY' ? 'good' : 'warn'}>
+                  {telegramSettings?.status || 'SETUP'}
+                </b>
+              </div>
+              <div className={`provider-credential-state ${telegramConnectionSaved ? 'saved' : 'missing'}`}>
+                {telegramConnectionSaved ? <CheckCircle2 size={15} /> : <Bell size={15} />}
+                <span>
+                  <strong>{telegramSettings?.enabled ? 'AUTO CONNECTED' : telegramConnectionSaved ? 'CONNECTION SAVED' : 'SETUP REQUIRED'}</strong>
+                  <small>
+                    {telegramConnectionSaved
+                      ? `Group ${telegramSettings?.chat_id || 'saved securely'}${telegramSettings?.bot_username ? ` · @${telegramSettings.bot_username}` : ''}`
+                      : 'Connect a Telegram bot and group chat.'}
+                  </small>
+                  {telegramConnectionSaved && <small>Restored automatically whenever the analyzer starts.</small>}
+                </span>
+              </div>
+              {showTelegramCredentials && (
+                <div className="telegram-credential-fields">
+                  <label>
+                    <span>Telegram bot token</span>
+                    <input
+                      type="password"
+                      value={telegramBotToken}
+                      onChange={event => setTelegramBotToken(event.target.value)}
+                      placeholder={telegramConnectionSaved ? 'Enter a new token to replace' : 'BotFather token'}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                  <label>
+                    <span>Group chat ID</span>
+                    <input
+                      type="text"
+                      value={telegramChatId}
+                      onChange={event => setTelegramChatId(event.target.value)}
+                      placeholder={telegramConnectionSaved ? 'Enter a new group chat ID' : '-100...'}
+                      autoComplete="off"
+                    />
+                  </label>
+                </div>
+              )}
+              <label className="telegram-enable-row">
+                <input
+                  type="checkbox"
+                  checked={telegramEnabled}
+                  onChange={event => setTelegramEnabled(event.target.checked)}
+                />
+                <span>
+                  <strong>Alert new confirmed Diamonds</strong>
+                  <small>One group message per unique completed-candle confirmation.</small>
+                </span>
+              </label>
+              <div className="telegram-connection-actions">
+                <button
+                  className="provider-save-button"
+                  onClick={onSaveTelegram}
+                  disabled={
+                    actionsDisabled
+                    || telegramVerification?.status === 'VERIFYING'
+                    || (telegramEnabled && !telegramBotToken.trim() && !telegramSettings?.bot_token_saved)
+                    || (telegramEnabled && !telegramChatId.trim() && !telegramSettings?.chat_id_saved)
+                  }
+                >
+                  {telegramVerification?.status === 'VERIFYING'
+                    ? 'Checking Telegram...'
+                    : telegramConnectionSaved && telegramEnabled && !replaceTelegramConnection
+                      ? 'Check saved connection'
+                      : telegramEnabled ? 'Test, Save & Enable' : 'Save Alert Settings'}
+                </button>
+                {telegramConnectionSaved && (
+                  <button
+                    type="button"
+                    className="telegram-replace-button"
+                    onClick={() => setReplaceTelegramConnection(current => !current)}
+                    disabled={actionsDisabled || telegramVerification?.status === 'VERIFYING'}
+                  >
+                    {replaceTelegramConnection ? 'Cancel replace' : 'Replace connection'}
+                  </button>
+                )}
+              </div>
+              {telegramVerification && telegramVerification.status !== 'VERIFYING' && (
+                <div className={`provider-verification ${telegramVerification.ok ? 'good' : 'bad'}`}>
+                  <strong>{telegramVerification.status || 'NOT VERIFIED'}</strong>
+                  <span>{telegramVerification.message || 'Telegram connection failed.'}</span>
+                </div>
+              )}
+              <small>The saved connection remains active across refresh and restart. The bot token is never shown in the browser.</small>
+            </div>
+          </section>
+        )}
         <div className="drawer-status">
           <div className="drawer-status-head"><Server size={15} /><span>Workspace status</span></div>
           <p><span>Asset</span><strong>{asset}</strong></p>
@@ -4933,6 +5180,11 @@ export default function App() {
   const [oandaToken, setOandaToken] = useState('')
   const [oandaEnvironment, setOandaEnvironment] = useState('practice')
   const [oandaVerification, setOandaVerification] = useState(null)
+  const [telegramSettings, setTelegramSettings] = useState(null)
+  const [telegramBotToken, setTelegramBotToken] = useState('')
+  const [telegramChatId, setTelegramChatId] = useState('')
+  const [telegramEnabled, setTelegramEnabled] = useState(false)
+  const [telegramVerification, setTelegramVerification] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [isDataHubOpen, setIsDataHubOpen] = useState(false)
   const [overlayMenuOpen, setOverlayMenuOpen] = useState(false)
@@ -5100,7 +5352,11 @@ export default function App() {
     setDataIntegrity(result.chart_data.data_integrity || null)
     setOverlays(result.overlays || { overlays: {} })
     setOverlayStatus(result.overlays?.overlay_status || null)
-    setPanels(result.panels || { indicator_panels: {} })
+    const nextPanels = result.panels || { indicator_panels: {} }
+    setPanels(nextPanels)
+    if (incomingCount >= 35 && isIndicatorSnapshotReady(nextPanels)) {
+      setMessage(current => isCandleSyncNotice(current) ? '' : current)
+    }
     setLiveChartState(state => ({
       ...safeObject(state),
       ok: true,
@@ -5181,7 +5437,7 @@ export default function App() {
           apiBaseUrl: API_BASE_URL,
         })
       }
-      const signalViewPromise = safeCall('market-signal-view', () => getMarketSignalView(nextAsset, nextTimeframe, 500, nextTradingStyle), {
+      const signalViewPromise = safeCall('market-signal-view', () => getMarketSignalView(nextAsset, nextTimeframe, 500, nextTradingStyle, false), {
         chart_data: { status: 'NO_HISTORY', candles: [], segments: {}, data_integrity: { status: 'NO_HISTORY' } },
         overlays: { status: 'NO_CANDLES', overlays: {}, chart_overlays: {}, overlay_status: {} },
         panels: { status: 'WAITING_FOR_HISTORY', indicator_panels: {}, badge: null },
@@ -5204,11 +5460,14 @@ export default function App() {
       const marketAlertsPromise = signalViewPromise.then(() => safeCall('market-alerts', () => getMarketAlerts(nextAsset, 20), {
         status: 'OK', symbol: nextAsset, alerts: [], stats: { total: 0, unread: 0, action_count: 0 },
       }))
+      const telegramSettingsPromise = isAdmin
+        ? safeCall('telegram-alert-settings', getTelegramAlertSettings, { telegram: { status: 'DISABLED', enabled: false } })
+        : Promise.resolve({ telegram: null })
       signalViewPromise.then(result => {
         if (!selectionIsCurrent()) return
         applyChartViewSnapshot(result, nextAsset, nextTimeframe, true)
       })
-      const [backendStatusResult, provider, engine, readiness, modeResult, stateResult, integrityResult, signalViewResult, explanationResult, overviewResult, mtfResult, diamondHistoryResult, diamondValidationResult, setupTrackerResult, governanceResult, alertsResult, providerCredentials] = await Promise.all([
+      const [backendStatusResult, provider, engine, readiness, modeResult, stateResult, integrityResult, signalViewResult, explanationResult, overviewResult, mtfResult, diamondHistoryResult, diamondValidationResult, setupTrackerResult, governanceResult, alertsResult, providerCredentials, telegramResult] = await Promise.all([
         safeCall('backend-status', getBackendStatus, { backend_status: 'ONLINE', data_mode_lock: DEFAULT_LOCKED_MODE }),
         safeCall('provider-status', getProviderStatus, { status: 'NO_DATA', provider_name: '-', latest_price: null, settings: {} }),
         safeCall('engine-status', getEngineStatus, { engine_mode: 'balanced', engine_core_version: 'V4' }),
@@ -5226,6 +5485,7 @@ export default function App() {
         strategyGovernancePromise,
         marketAlertsPromise,
         safeCall('provider-credentials', getProviderCredentials, { settings: {}, oanda_restore: null }),
+        telegramSettingsPromise,
       ])
       if (!selectionIsCurrent()) return
       const credentialSettings = Object.keys(safeObject(providerCredentials?.settings)).length
@@ -5284,6 +5544,10 @@ export default function App() {
       setDiamondValidation(diamondValidationResult)
       setStrategyGovernance(governanceResult)
       setMarketAlerts(alertsResult)
+      if (telegramResult?.telegram) {
+        setTelegramSettings(telegramResult.telegram)
+        setTelegramEnabled(Boolean(telegramResult.telegram.enabled))
+      }
       setSetupTracker(setupTrackerResult)
       setSessionFramework(signalViewResult?.session_framework || null)
       setKeyZones(signalViewResult?.key_zones || signalViewResult?.analysis?.key_zones || null)
@@ -5312,10 +5576,16 @@ export default function App() {
     setValidationLoading(true)
     setError('')
     try {
-      const result = await runDiamondValidation(asset, timeframe, { lookbackBars: 1000, refreshMarket: true })
+      const result = await runDiamondValidation(asset, timeframe, {
+        lookbackBars: 1000,
+        refreshMarket: true,
+        force: true,
+      })
       setDiamondValidation(result)
-      const resolved = Number(result?.summary?.resolved) || 0
-      setMessage(`${asset} ${timeframeLabel(timeframe)} validation complete: ${resolved} resolved Diamond events.`)
+      const replay = safeObject(result?.replay_summary)
+      setMessage(
+        `${asset} ${timeframeLabel(timeframe)} history analyzed: ${replay.strategy_confirmed_setups ?? 0} confirmed setups, ${replay.respected ?? 0} respected, ${replay.failed ?? 0} failed.`,
+      )
     } catch (err) {
       setError(err?.message || 'Diamond validation failed.')
     } finally {
@@ -5507,6 +5777,39 @@ export default function App() {
       }
       setOandaVerification(verification)
       setMessage(verification.message)
+    }
+  }
+
+  async function saveTelegramAlerts() {
+    setTelegramVerification({ status: 'VERIFYING', ok: false })
+    const payload = {
+      bot_token: telegramBotToken.trim() || undefined,
+      chat_id: telegramChatId.trim() || undefined,
+      enabled: telegramEnabled,
+    }
+    try {
+      const result = telegramEnabled
+        ? await testTelegramAlert(payload)
+        : await saveTelegramAlertSettings(payload)
+      const nextSettings = result.telegram || telegramSettings
+      setTelegramSettings(nextSettings)
+      setTelegramEnabled(Boolean(nextSettings?.enabled))
+      setTelegramVerification({
+        ok: true,
+        status: result.status || (telegramEnabled ? 'VERIFIED' : 'SAVED'),
+        message: result.message || (telegramEnabled ? 'Telegram alerts connected.' : 'Telegram alerts paused.'),
+      })
+      setTelegramBotToken('')
+      setTelegramChatId('')
+      setMessage(result.message || 'Telegram alert settings saved.')
+    } catch (err) {
+      const failure = err?.payload || {
+        ok: false,
+        status: 'CONNECTION_FAILED',
+        message: err?.message || 'Telegram connection failed.',
+      }
+      setTelegramVerification(failure)
+      setMessage(failure.message)
     }
   }
 
@@ -5741,6 +6044,7 @@ export default function App() {
     setSessionFramework(null)
     setKeyZones(null)
     setNewsIntelligence(null)
+    setMessage('')
     chartBootstrapPendingRef.current = true
 
     const isCurrentSwitch = () => timeframeSwitchIdRef.current === switchId
@@ -5775,14 +6079,17 @@ export default function App() {
     } catch (err) {
       if (!isCurrentSwitch()) return
       chartBootstrapPendingRef.current = false
+      const fallback = cached || chartViewCacheRef.current.get(`${asset}:${normalized}`)
+      const fallbackReady = chartSnapshotCandleCount(fallback?.chart_data) >= 35
+        && isIndicatorSnapshotReady(fallback?.panels)
       setLiveChartState(state => ({
         ...safeObject(state),
-        status: cached ? 'CACHE_READY' : 'SYNC_PAUSED',
-        message: err?.message || 'Timeframe synchronization paused.',
+        status: fallbackReady ? 'CACHE_READY' : 'SYNC_PAUSED',
+        message: fallbackReady
+          ? 'Indicators are ready from matched history; live synchronization will retry automatically.'
+          : err?.message || 'Timeframe synchronization paused.',
       }))
-      setMessage(cached
-        ? `${timeframeLabel(normalized)} cached candles loaded; live analysis will retry automatically.`
-        : `${timeframeLabel(normalized)} candles are still synchronizing.`)
+      setMessage(fallbackReady ? '' : `${timeframeLabel(normalized)} candles are still synchronizing.`)
     } finally {
       if (isCurrentSwitch()) setTimeframeTransition({ active: false, target: normalized, phase: 'ready' })
     }
@@ -6389,6 +6696,15 @@ export default function App() {
         setOandaEnvironment={setOandaEnvironment}
         onSaveOanda={saveOandaFeed}
         oandaVerification={oandaVerification}
+        telegramSettings={telegramSettings}
+        telegramBotToken={telegramBotToken}
+        setTelegramBotToken={setTelegramBotToken}
+        telegramChatId={telegramChatId}
+        setTelegramChatId={setTelegramChatId}
+        telegramEnabled={telegramEnabled}
+        setTelegramEnabled={setTelegramEnabled}
+        telegramVerification={telegramVerification}
+        onSaveTelegram={saveTelegramAlerts}
         providerAlignment={activeProviderAlignment}
         onUploadCsv={uploadCsv}
         onImportHistory={importRealHistory}

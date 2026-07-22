@@ -1,6 +1,6 @@
 {
   "name": "sh-gold-analyzer-frontend",
-  "version": "3.8.1",
+  "version": "3.8.5",
   "private": true,
   "type": "module",
   "scripts": {

@@ -41,6 +41,38 @@ class DeterministicDiamondEngine:
         }
 
 
+class StrategyReplayEngine:
+    def __init__(self, confirmed_times, score_only_times=()):
+        self.confirmed_times = set(confirmed_times)
+        self.score_only_times = set(score_only_times)
+
+    def calculate(self, candles, timeframe, source=None, symbol="XAUUSD"):
+        timestamp = int(candles[-1]["time"])
+        if timestamp not in self.confirmed_times | self.score_only_times:
+            return {"status": "READY", "zones": [], "entry_events": []}
+        strategy_confirmed = timestamp in self.confirmed_times
+        return {
+            "status": "READY",
+            "zones": [{
+                "id": f"buy-{timestamp}",
+                "time": timestamp,
+                "entry_side": "BUY",
+                "direction": "BULLISH",
+                "line": 100.0,
+                "low": 99.8,
+                "high": 100.2,
+                "atr_14": 1.0,
+                "origin_model": "SWEEP_AND_BREAK",
+                "diamond_score": 95,
+                "diamond_grade": "A+",
+                "entry_eligible_origin": strategy_confirmed,
+                "strategy_confirmed_origin": strategy_confirmed,
+                "display_as_diamond": True,
+            }],
+            "entry_events": [],
+        }
+
+
 def candles(count=270):
     rows = []
     for index in range(count):
@@ -109,6 +141,28 @@ class DiamondValidationLabTests(unittest.TestCase):
 
         self.assertEqual(latest["status"], "NOT_RUN")
         self.assertNotEqual(latest["engine_version"], "LEGACY_ENGINE")
+
+    def test_history_replay_plots_only_strategy_confirmed_diamonds(self):
+        rows = candles()
+        confirmed_time = rows[230]["time"]
+        score_only_time = rows[232]["time"]
+        rows[231]["high"] = 101.7
+        rows[231]["low"] = 99.9
+        lab = DiamondValidationLab(
+            self.db_path,
+            StrategyReplayEngine({confirmed_time}, {score_only_time}),
+        )
+
+        result = lab.run("XAUUSD", "5M", rows, "OANDA_XAUUSD_REAL_HISTORY", horizon_bars=12)
+
+        self.assertEqual(result["replay_summary"]["strategy_confirmed_setups"], 1)
+        self.assertEqual(result["replay_summary"]["respected"], 1)
+        self.assertEqual(result["replay_summary"]["failed"], 0)
+        self.assertEqual(result["replay_summary"]["respect_rate"], 100.0)
+        self.assertEqual(len(result["replay_zones"]), 1)
+        self.assertEqual(result["replay_zones"][0]["detected_time"], confirmed_time)
+        self.assertTrue(result["replay_zones"][0]["strategy_confirmed_origin"])
+        self.assertFalse(result["replay_zones"][0]["score_creates_diamond"])
 
     def test_failure_diagnostics_preserve_terminal_zone_reasons(self):
         diagnostics = DiamondValidationLab._failure_diagnostics({

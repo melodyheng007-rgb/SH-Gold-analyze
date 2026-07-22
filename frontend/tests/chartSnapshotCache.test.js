@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   createChartSnapshotRecord,
+  isIndicatorSnapshotReady,
   readChartSnapshot,
   writeChartSnapshot,
 } from '../src/utils/chartSnapshotCache.js'
@@ -57,4 +58,31 @@ test('rejects tick-sized, unmatched, stale, and wrong-view snapshots', () => {
   writeChartSnapshot(storage, snapshot(), 'XAUUSD', '5M', 10_000)
   assert.equal(readChartSnapshot(storage, 'BTCUSD', '5M', { now: 11_000 }), null)
   assert.equal(readChartSnapshot(storage, 'XAUUSD', '5M', { now: 20_001, maxAgeMs: 10_000 }), null)
+})
+
+test('cached indicator readiness is independent from full analysis warmup', () => {
+  assert.equal(isIndicatorSnapshotReady(snapshot().panels), true)
+  assert.equal(isIndicatorSnapshotReady({ readiness: { status: 'READY' } }), true)
+  assert.equal(isIndicatorSnapshotReady({
+    status: 'WAITING_FOR_HISTORY',
+    indicator_panels: { indicator_snapshot: { status: 'WAITING' } },
+  }), false)
+})
+
+test('keeps warm snapshots for more than one market view', () => {
+  const storage = memoryStorage()
+  const xau = snapshot()
+  const btc = snapshot(40, {
+    symbol: 'BTCUSD',
+    timeframe: '1H',
+    chart_data: {
+      ...snapshot().chart_data,
+      symbol: 'BTCUSD',
+      timeframe: '1H',
+    },
+  })
+  assert.equal(writeChartSnapshot(storage, xau, 'XAUUSD', '5M', 10_000), true)
+  assert.equal(writeChartSnapshot(storage, btc, 'BTCUSD', '1H', 10_100), true)
+  assert.equal(readChartSnapshot(storage, 'XAUUSD', '5M', { now: 11_000 }).symbol, 'XAUUSD')
+  assert.equal(readChartSnapshot(storage, 'BTCUSD', '1H', { now: 11_000 }).symbol, 'BTCUSD')
 })

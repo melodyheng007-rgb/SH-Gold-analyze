@@ -140,6 +140,28 @@ class DiamondAutoEntryTests(unittest.TestCase):
         self.assertEqual(analysis["trade_plan"], original)
         self.assertFalse(analysis["signal"]["diamond_auto_entry_armed"])
 
+    def test_verified_opposite_smt_divergence_blocks_entry(self) -> None:
+        analysis = actionable_analysis()
+        analysis["smt_model"] = {
+            "status": "READY",
+            "state": "BEARISH_DIVERGENCE",
+            "direction": "SELL",
+            "confidence": 82,
+            "execution_gate": "DIVERGENCE_READY",
+            "reason": "XAG failed to confirm the latest higher high.",
+        }
+
+        result = self.engine.apply(
+            analysis,
+            qualified_zones(),
+            aligned_session(),
+            {"execution_gate": "OPEN"},
+        )
+
+        self.assertEqual(result["status"], "WAITING_SMT")
+        self.assertFalse(analysis["signal"]["diamond_auto_entry_armed"])
+        self.assertEqual(result["smt_execution_gate"], "BLOCK_CONFLICT")
+
     def test_arms_sell_entry_with_stop_above_rejection_swing(self) -> None:
         analysis = actionable_analysis()
         analysis.update({"current_price": 99.5, "bias": "Bearish", "htf_bias": {"bias": "Bearish"}})
@@ -310,6 +332,97 @@ class DiamondAutoEntryTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "WAITING_DIAMOND")
         self.assertIn("Swing entries require one of: 4H / 1H", result["next_trigger"])
+
+    def test_smr_watch_is_informational_and_does_not_make_entries_sparse(self) -> None:
+        analysis = actionable_analysis()
+        analysis["smr_model"] = {
+            "status": "READY",
+            "pattern_state": "SCANNING_LIQUIDITY",
+            "score": 34,
+            "execution_gate": "WATCH",
+            "next_trigger": "Wait for a completed-candle liquidity raid.",
+            "session": {"name": "LONDON", "quality": "PRIME"},
+        }
+
+        result = self.engine.apply(
+            analysis,
+            qualified_zones(),
+            aligned_session(),
+            {"execution_gate": "OPEN"},
+        )
+
+        self.assertEqual(result["status"], "AUTO_ARMED")
+        self.assertEqual(result["smr_state"], "SCANNING_LIQUIDITY")
+        self.assertEqual(result["smr_session"], "LONDON")
+
+    def test_confirmed_smr_conflict_blocks_auto_entry(self) -> None:
+        analysis = actionable_analysis()
+        analysis["smr_model"] = {
+            "status": "READY",
+            "pattern_state": "CONFIRMED",
+            "direction": "SELL",
+            "score": 82,
+            "execution_gate": "BLOCK_CONFLICT",
+            "next_trigger": "The confirmed SMR direction conflicts with the Diamond.",
+            "session": {"name": "NEW_YORK", "quality": "PRIME"},
+        }
+
+        result = self.engine.apply(
+            analysis,
+            qualified_zones(),
+            aligned_session(),
+            {"execution_gate": "OPEN"},
+        )
+
+        self.assertEqual(result["status"], "WAITING_SMR")
+        self.assertIn("SMR conflict", result["next_trigger"])
+        self.assertFalse(analysis["signal"]["diamond_auto_entry_armed"])
+
+    def test_dual_core_watch_does_not_make_entries_sparse(self) -> None:
+        analysis = actionable_analysis()
+        analysis["diamond_timeframe_model"] = {
+            "status": "READY",
+            "state": "CORE_BUILDING",
+            "score": 64,
+            "grade": "C",
+            "focus_timeframe": "5M",
+            "execution_gate": "WATCH",
+            "next_trigger": "Wait for execution momentum to align.",
+        }
+
+        result = self.engine.apply(
+            analysis,
+            qualified_zones(),
+            aligned_session(),
+            {"execution_gate": "OPEN"},
+        )
+
+        self.assertEqual(result["status"], "AUTO_ARMED")
+        self.assertEqual(result["dual_core_state"], "CORE_BUILDING")
+        self.assertEqual(result["dual_core_focus_timeframe"], "5M")
+
+    def test_dual_core_conflict_blocks_auto_entry(self) -> None:
+        analysis = actionable_analysis()
+        analysis["diamond_timeframe_model"] = {
+            "status": "READY",
+            "state": "CORE_CONFLICT",
+            "score": 42,
+            "grade": "D",
+            "focus_timeframe": "5M",
+            "execution_gate": "BLOCK_CONFLICT",
+            "next_trigger": "Resolve anchor context conflict before accepting this Diamond.",
+        }
+
+        result = self.engine.apply(
+            analysis,
+            qualified_zones(),
+            aligned_session(),
+            {"execution_gate": "OPEN"},
+        )
+
+        self.assertEqual(result["status"], "WAITING_DUAL_CORE")
+        self.assertIn("anchor context conflict", result["next_trigger"])
+        self.assertFalse(analysis["signal"]["diamond_auto_entry_armed"])
 
 
 if __name__ == "__main__":
