@@ -151,10 +151,31 @@ class ProviderSettings:
             "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
             "telegram_chat_id": "TELEGRAM_CHAT_ID",
         }.get(name, name.upper())
+        data = self._load()
+
+        # A connection verified from the Admin UI must replace stale Railway
+        # bootstrap variables. Environment values remain the fallback for a
+        # fresh deployment that has no persisted Telegram configuration yet.
+        if name == "telegram_bot_token":
+            protected = str(data.get("telegram_bot_token_protected") or "").strip()
+            if protected:
+                try:
+                    saved = str(_windows_unprotect_secret(protected) or "").strip()
+                    if saved:
+                        return saved
+                except Exception:
+                    pass
+            saved = str(data.get("telegram_bot_token") or "").strip()
+            if saved:
+                return saved
+        if name == "telegram_chat_id":
+            saved = str(data.get("telegram_chat_id") or "").strip()
+            if saved:
+                return saved
+
         value = os.getenv(env_name)
         if value:
             return value.strip()
-        data = self._load()
         if name in {"oanda_api_token", "telegram_bot_token"}:
             protected = str(data.get(f"{name}_protected") or "").strip()
             if protected:

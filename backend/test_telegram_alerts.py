@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from engine.telegram_alerts import TelegramDiamondAlerts
@@ -133,11 +134,15 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
             bot_username="sh_alert_bot",
         )
 
-        restored_settings = ProviderSettings(str(settings_path))
-        restored = TelegramDiamondAlerts(
-            Path(self.temp_dir.name) / "restart-alerts.sqlite",
-            restored_settings,
-        ).status()
+        with patch.dict("os.environ", {
+            "TELEGRAM_BOT_TOKEN": "stale-environment-token",
+            "TELEGRAM_CHAT_ID": "@wrong_bot_destination",
+        }):
+            restored_settings = ProviderSettings(str(settings_path))
+            restored = TelegramDiamondAlerts(
+                Path(self.temp_dir.name) / "restart-alerts.sqlite",
+                restored_settings,
+            ).status()
 
         self.assertEqual(restored["status"], "READY")
         self.assertEqual(restored["connection_state"], "AUTO_CONNECTED")
