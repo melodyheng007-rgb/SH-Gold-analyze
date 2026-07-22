@@ -41,6 +41,11 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_new_confirmed_diamond_is_delivered_once(self):
+        captured = []
+        self.alerts._send_message = lambda token, chat_id, text: captured.append(text) or {
+            "ok": True,
+            "result": {"message_id": 77},
+        }
         alert = {
             "is_new": True,
             "event_key": "XAUUSD:5M:buy-1:CONFIRMED",
@@ -72,6 +77,9 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
         self.assertEqual(second["reason"], "ALREADY_DELIVERED_OR_QUEUED")
         self.assertEqual(status["stats"]["delivered"], 1)
         self.assertEqual(status["stats"]["failed"], 0)
+        self.assertIn("SH DIAMOND ENTRY ថ្មី", captured[0])
+        self.assertIn("ទិញ (BUY)", captured[0])
+        self.assertIn("តំបន់ Entry", captured[0])
 
     def test_polling_existing_alert_never_queues_again(self):
         result = self.alerts.enqueue({
@@ -83,7 +91,7 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
         self.assertFalse(result["queued"])
         self.assertEqual(result["reason"], "NOT_A_NEW_ALERT")
 
-    def test_invalidation_is_supported_and_sent_once(self):
+    def test_invalidation_is_not_delivered_to_telegram(self):
         captured = []
         self.alerts._send_message = lambda token, chat_id, text: captured.append(text) or {
             "ok": True,
@@ -98,14 +106,25 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
             "side": "BUY",
         }
 
-        first = self.alerts.enqueue(alert, {})
-        self.alerts._queue.join()
-        second = self.alerts.enqueue(alert, {})
+        result = self.alerts.enqueue(alert, {})
 
-        self.assertTrue(first["queued"])
-        self.assertFalse(second["queued"])
-        self.assertIn("INVALIDATED", captured[0])
-        self.assertEqual(self.alerts.status()["delivery_policy"], "CONFIRMED_AND_INVALIDATED_DIAMOND_ONCE")
+        self.assertFalse(result["queued"])
+        self.assertEqual(result["reason"], "ALERT_KIND_NOT_DELIVERED")
+        self.assertEqual(captured, [])
+        self.assertEqual(self.alerts.status()["delivery_policy"], "NEW_CONFIRMED_ENTRY_ZONE_ONCE")
+
+    def test_news_locked_zone_is_not_delivered_to_telegram(self):
+        result = self.alerts.enqueue({
+            "is_new": True,
+            "event_key": "XAUUSD:5M:buy-2:NEWS_LOCK",
+            "symbol": "XAUUSD",
+            "timeframe": "5M",
+            "kind": "DIAMOND_NEWS_LOCKED",
+            "side": "BUY",
+        }, {})
+
+        self.assertFalse(result["queued"])
+        self.assertEqual(result["reason"], "ALERT_KIND_NOT_DELIVERED")
 
     def test_configuration_never_returns_full_token_or_chat_id(self):
         status = self.alerts.configure(

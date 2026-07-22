@@ -14,13 +14,11 @@ import requests
 
 
 class TelegramDiamondAlerts:
-    """Deliver each new confirmed Diamond alert once without blocking analysis."""
+    """Deliver each new confirmed Diamond entry zone once without blocking analysis."""
 
     ALLOWED_KINDS = {
         "TRACKABLE_DIAMOND_SETUP",
         "DIAMOND_CONFIRMED_RESEARCH",
-        "DIAMOND_NEWS_LOCKED",
-        "DIAMOND_INVALIDATED",
     }
 
     def __init__(self, db_path: str | Path, settings: Any):
@@ -90,7 +88,7 @@ class TelegramDiamondAlerts:
             "verified": self._enabled(self.settings.get("telegram_connection_verified")),
             "verified_at": self.settings.get("telegram_verified_at") or None,
             "bot_username": self.settings.get("telegram_bot_username") or None,
-            "delivery_policy": "CONFIRMED_AND_INVALIDATED_DIAMOND_ONCE",
+            "delivery_policy": "NEW_CONFIRMED_ENTRY_ZONE_ONCE",
             "queue_depth": self._queue.qsize(),
             "stats": {
                 "total": int((row["total"] if row else 0) or 0),
@@ -146,7 +144,11 @@ class TelegramDiamondAlerts:
         result = self._send_message(
             token,
             target,
-            "<b>SH Market Analyzer</b>\nTelegram Diamond alerts are connected.\nNew confirmations and invalidations are sent once.",
+            (
+                "<b>SH Market Analyzer</b>\n"
+                "Telegram បានភ្ជាប់ជោគជ័យ។\n"
+                "Bot នឹងផ្ញើតែ Diamond Entry Zone ថ្មីដែល Engine បានបញ្ជាក់។"
+            ),
         )
         if result.get("ok"):
             bot = (identity.get("result") or {}).get("username")
@@ -295,29 +297,35 @@ class TelegramDiamondAlerts:
 
     @staticmethod
     def _message(alert: Dict[str, Any], context: Dict[str, Any]) -> str:
-        side = html.escape(str(alert.get("side") or "WAIT").upper())
+        raw_side = str(alert.get("side") or "WAIT").upper()
+        side = html.escape({"BUY": "ទិញ (BUY)", "SELL": "លក់ (SELL)"}.get(raw_side, raw_side))
         symbol = html.escape(str(alert.get("symbol") or "UNKNOWN").upper())
         timeframe = html.escape(str(alert.get("timeframe") or "-").upper())
-        style = html.escape(str(context.get("style") or "-").replace("SCALPING", "SCALP").title())
+        raw_style = str(context.get("style") or "-").upper()
+        style = html.escape({"SCALPING": "Scalp", "SCALP": "Scalp", "SWING": "Swing"}.get(raw_style, raw_style.title()))
         grade = html.escape(str(context.get("grade") or "-"))
         score = html.escape(str(context.get("score") or "-"))
         zone = context.get("zone")
         zone_text = f"{float(zone):.5f}" if isinstance(zone, (int, float)) else "-"
         model = html.escape(str(context.get("model") or "STRUCTURAL SETUP").replace("_", " ").title())
-        regime = html.escape(str(context.get("regime") or "WAITING").replace("_", " ").title())
-        invalidated = str(alert.get("kind") or "").upper() == "DIAMOND_INVALIDATED"
-        title = "SH DIAMOND INVALIDATED" if invalidated else "SH DIAMOND ZONE"
-        status = "Zone invalidated on a completed candle" if invalidated else "New completed-candle confirmation"
+        raw_regime = str(context.get("regime") or "WAITING").upper()
+        regime = html.escape({
+            "TRENDING_BULLISH": "ទីផ្សារកំពុងឡើង",
+            "TRENDING_BEARISH": "ទីផ្សារកំពុងចុះ",
+            "RANGE": "ទីផ្សារក្នុងចន្លោះ",
+            "RANGING": "ទីផ្សារក្នុងចន្លោះ",
+            "WAITING": "កំពុងរង់ចាំទិន្នន័យ",
+        }.get(raw_regime, raw_regime.replace("_", " ").title()))
         return (
-            f"<b>{title}</b>\n"
-            f"<b>{symbol} / {timeframe} / {style}</b>\n"
-            f"Side: <b>{side}</b>\n"
-            f"Grade: <b>{grade}</b> ({score}%)\n"
-            f"Key zone: <b>{zone_text}</b>\n"
-            f"Model: {model}\n"
-            f"Market: {regime}\n"
-            f"Status: {status}\n\n"
-            "Research alert only. Re-check current price and market conditions."
+            "<b>SH DIAMOND ENTRY ថ្មី</b>\n"
+            f"<b>{symbol} | {timeframe} | {style}</b>\n\n"
+            f"ទិសដៅ៖ <b>{side}</b>\n"
+            f"កម្រិត៖ <b>{grade}</b> ({score}%)\n"
+            f"តំបន់ Entry៖ <b>{zone_text}</b>\n"
+            f"Strategy៖ {model}\n"
+            f"ស្ថានភាពទីផ្សារ៖ {regime}\n\n"
+            "<b>Engine បានបញ្ជាក់ Entry Zone ថ្មី។</b>\n"
+            "សូមពិនិត្យតម្លៃបច្ចុប្បន្ន និងព័ត៌មានទីផ្សារមុនពេលសម្រេចចិត្ត។"
         )
 
     @staticmethod
