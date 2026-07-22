@@ -1,8 +1,8 @@
 {
-  "name": "SH Market Analyzer V3.8",
+  "name": "SH Market Analyzer V3.8.5",
   "short_name": "SH Analyzer",
   "description": "Adaptive XAU and BTC Diamond Zone intelligence.",
-  "start_url": "/",
+  "start_url": "/?pwa=3.8.5.2",
   "display": "standalone",
   "background_color": "#080a0d",
   "theme_color": "#080a0d",

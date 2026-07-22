@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
@@ -89,6 +90,7 @@ from engine.xauusd_provider import (
 APP_VERSION = "3.8.5"
 APP_VERSION_LABEL = "V3.8.5"
 APP_DESCRIPTION = "Diamond Discovery Trading OS"
+logger = logging.getLogger("sh_market_analyzer")
 MARKET_VISUAL_SYMBOLS = {
     "XAUUSD": "OANDA:XAUUSD",
     "BTCUSD": "BINANCE:BTCUSDT",
@@ -303,6 +305,17 @@ class TelegramAlertSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
 
 
+class ClientErrorPayload(BaseModel):
+    scope: str = "unknown"
+    message: str = "Unknown client error"
+    build_id: str = "unknown"
+    path: str = "/"
+
+
+_client_error_lock = threading.Lock()
+_client_error_windows: Dict[str, list[float]] = {}
+
+
 @app.get("/")
 def root():
     return {
@@ -418,6 +431,29 @@ def startup_log():
             name="oanda-feed-restore",
             daemon=True,
         ).start()
+
+
+@app.post("/api/client-errors")
+def record_client_error(payload: ClientErrorPayload, request: Request):
+    client_host = request.client.host if request.client else "unknown"
+    now = time.time()
+    with _client_error_lock:
+        recent = [stamp for stamp in _client_error_windows.get(client_host, []) if now - stamp < 60]
+        if len(recent) >= 8:
+            _client_error_windows[client_host] = recent
+            return {"status": "RATE_LIMITED"}
+        recent.append(now)
+        _client_error_windows[client_host] = recent
+
+    clean = lambda value, limit: str(value or "").replace("\r", " ").replace("\n", " ")[:limit]
+    logger.error(
+        "CLIENT_ERROR scope=%s build=%s path=%s message=%s",
+        clean(payload.scope, 40),
+        clean(payload.build_id, 32),
+        clean(payload.path, 160),
+        clean(payload.message, 300),
+    )
+    return {"status": "RECORDED"}
 
 
 @app.get("/api/health")

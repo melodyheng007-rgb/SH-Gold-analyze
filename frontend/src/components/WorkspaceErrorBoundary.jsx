@@ -1,5 +1,6 @@
 import React from 'react'
 import { BarChart3, RefreshCw } from 'lucide-react'
+import { reportClientError } from '../utils/clientDiagnostics.js'
 
 export default class WorkspaceErrorBoundary extends React.Component {
   constructor(props) {
@@ -14,6 +15,7 @@ export default class WorkspaceErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('Market chart recovered from an error.', error, errorInfo)
+    reportClientError('signal_chart', error)
     if (this.state.retries < 1) {
       this.retryTimer = window.setTimeout(this.retry, 700)
     }

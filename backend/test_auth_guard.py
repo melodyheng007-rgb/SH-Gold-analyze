@@ -31,6 +31,7 @@ class SupabaseAuthGuardTests(unittest.TestCase):
     def test_health_and_preflight_remain_public(self):
         guard = self.make_guard()
         self.assertFalse(guard.protects("GET", "/api/health"))
+        self.assertFalse(guard.protects("POST", "/api/client-errors"))
         self.assertFalse(guard.protects("OPTIONS", "/api/market/chart-live"))
         self.assertTrue(guard.protects("GET", "/api/market/chart-live"))
         self.assertTrue(guard.protects("GET", "/docs"))

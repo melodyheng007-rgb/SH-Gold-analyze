@@ -26,7 +26,7 @@ class AuthGuardError(Exception):
 class SupabaseAuthGuard:
     """Validate browser access tokens with Supabase Auth and briefly cache valid users."""
 
-    PUBLIC_PATHS = {"/api/health"}
+    PUBLIC_PATHS = {"/api/health", "/api/client-errors"}
     ADMIN_PATHS = {
         "/api/debug",
         "/api/routes",

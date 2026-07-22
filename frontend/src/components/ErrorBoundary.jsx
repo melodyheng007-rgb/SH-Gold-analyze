@@ -1,4 +1,5 @@
 import React from 'react'
+import { reportClientError } from '../utils/clientDiagnostics.js'
 
 const ROOT_RECOVERY_KEY = 'sh_root_recovery_attempt'
 const ROOT_RECOVERY_WINDOW_MS = 60_000
@@ -16,6 +17,7 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('SH Market Analyzer recovered from an application error.', error, errorInfo)
+    reportClientError('workspace_root', error)
     try {
       sessionStorage.setItem('sh_last_app_error', JSON.stringify({
         at: new Date().toISOString(),
@@ -63,8 +65,8 @@ export default class ErrorBoundary extends React.Component {
     return (
       <main className="fatal-error-screen">
         <section>
-          <strong>Something went wrong</strong>
-          <p>The workspace could not be opened. Please refresh and try again.</p>
+          <strong>{this.recoveryTimer ? 'Restoring workspace' : 'Workspace needs a refresh'}</strong>
+          <p>{this.recoveryTimer ? 'A fresh version is being loaded automatically.' : 'Your account is safe. Refresh the workspace to continue.'}</p>
           <div className="fatal-error-actions">
             <button onClick={() => window.location.reload()}>Try again</button>
             <button onClick={this.resetWorkspace}>Reset workspace</button>
