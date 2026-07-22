@@ -17,6 +17,8 @@ import { normalizeEmail, validateAuthForm } from './authValidation.js'
 import { AUTH_REQUEST_TIMEOUT_CODE } from './authRequest.js'
 import { RECOVERY_LINK_INVALID, RECOVERY_SESSION_MISSING } from './recoverySession.js'
 import { useAuth } from './AuthProvider.jsx'
+import { TurnstileGate, turnstileConfigured } from './TurnstileGate.jsx'
+import { apiRequest } from '../services/apiClient.js'
 
 const EMPTY_FORM = { fullName: '', email: '', password: '', confirmPassword: '', otp: '' }
 
@@ -89,6 +91,8 @@ export function AuthScreen({ recovery = false, onClose = null }) {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [resendSeconds, setResendSeconds] = useState(0)
+  const [captchaToken, setCaptchaToken] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
 
   useEffect(() => {
     if (recovery) setMode('reset')
@@ -111,6 +115,8 @@ export function AuthScreen({ recovery = false, onClose = null }) {
     setError('')
     setMessage('')
     setResendSeconds(0)
+    setCaptchaToken('')
+    setCaptchaReset(value => value + 1)
     setForm(current => ({ ...EMPTY_FORM, email: current.email }))
   }
 
@@ -136,14 +142,19 @@ export function AuthScreen({ recovery = false, onClose = null }) {
       setError(validationError)
       return
     }
+    const protectedMode = ['login', 'register', 'forgot'].includes(mode)
+    if (turnstileConfigured && protectedMode && !captchaToken) {
+      setError('Complete the security check before continuing.')
+      return
+    }
 
     const email = normalizeEmail(form.email)
     setBusy(true)
     try {
       if (mode === 'login') {
-        await auth.signIn(email, form.password)
+        await auth.signIn(email, form.password, captchaToken)
       } else if (mode === 'register') {
-        const result = await auth.signUp(email, form.password, form.fullName.trim())
+        const result = await auth.signUp(email, form.password, form.fullName.trim(), captchaToken)
         if (result.needsEmailConfirmation) {
           setMode('verify-signup')
           setForm(current => ({ ...EMPTY_FORM, email: current.email }))
@@ -151,7 +162,7 @@ export function AuthScreen({ recovery = false, onClose = null }) {
           setMessage('A 6-digit confirmation code was sent to your email.')
         }
       } else if (mode === 'forgot') {
-        await auth.sendPasswordReset(email)
+        await auth.sendPasswordReset(email, captchaToken)
         setMode('verify-recovery')
         setForm(current => ({ ...EMPTY_FORM, email: current.email }))
         setResendSeconds(30)
@@ -174,6 +185,10 @@ export function AuthScreen({ recovery = false, onClose = null }) {
       setError(friendlyAuthError(requestError))
     } finally {
       setBusy(false)
+      if (protectedMode && turnstileConfigured) {
+        setCaptchaToken('')
+        setCaptchaReset(value => value + 1)
+      }
     }
   }
 
@@ -199,13 +214,27 @@ export function AuthScreen({ recovery = false, onClose = null }) {
       setError('Account service is temporarily unavailable. Please try again shortly.')
       return
     }
+    if (turnstileConfigured && !captchaToken) {
+      setError('Complete the security check before continuing.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
+      if (turnstileConfigured) {
+        await apiRequest('/api/security/turnstile/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: captchaToken, action: 'account_access' }),
+          timeoutMs: 10000,
+        })
+      }
       await auth.signInWithGoogle()
     } catch (requestError) {
       setError(friendlyAuthError(requestError))
       setBusy(false)
+      setCaptchaToken('')
+      setCaptchaReset(value => value + 1)
     }
   }
 
@@ -242,7 +271,7 @@ export function AuthScreen({ recovery = false, onClose = null }) {
     <main className="auth-screen">
       <section className="auth-brand" aria-label="SH Market Analyzer">
         <div className="auth-brand-mark"><Diamond size={26} /></div>
-        <div><span>SH MARKET ANALYZER V3.8.5</span><strong>Adaptive Diamond</strong></div>
+        <div><span>SH MARKET ANALYZER V3.8.6</span><strong>Adaptive Diamond</strong></div>
       </section>
 
       <section className="auth-panel">
@@ -321,6 +350,10 @@ export function AuthScreen({ recovery = false, onClose = null }) {
           )}
 
           {mode === 'login' && <button className="forgot-link" type="button" onClick={() => changeMode('forgot')}>Forgot password?</button>}
+
+          {['login', 'register', 'forgot'].includes(mode) && (
+            <TurnstileGate onToken={setCaptchaToken} resetNonce={captchaReset} />
+          )}
 
           {error && <div className="auth-feedback error" role="alert">{error}</div>}
           {message && <div className="auth-feedback success" role="status"><CheckCircle2 size={15} />{message}</div>}

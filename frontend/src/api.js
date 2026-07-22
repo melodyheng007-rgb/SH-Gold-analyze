@@ -221,6 +221,19 @@ export async function testTelegramAlert(settings) {
   })
 }
 
+export async function getTelegramCommunity() {
+  return await apiRequest('/api/community/telegram', { timeoutMs: 5000 })
+}
+
+export async function saveTelegramCommunity(url) {
+  return await apiRequest('/api/admin/community/telegram', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+    timeoutMs: 5000,
+  })
+}
+
 export async function startLiveBuilder() {
   return await apiRequest('/api/xauusd/start-live-builder', { method: 'POST' })
 }

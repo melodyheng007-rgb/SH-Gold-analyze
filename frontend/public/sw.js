@@ -1,4 +1,4 @@
-const WORKER_BUILD_ID = '3.8.5.2'
+const WORKER_BUILD_ID = '3.8.6.1'
 let replacingExistingWorker = false
 
 self.addEventListener('install', event => {

@@ -26,7 +26,7 @@ class AuthGuardError(Exception):
 class SupabaseAuthGuard:
     """Validate browser access tokens with Supabase Auth and briefly cache valid users."""
 
-    PUBLIC_PATHS = {"/api/health", "/api/client-errors"}
+    PUBLIC_PATHS = {"/api/health", "/api/client-errors", "/api/security/turnstile/verify"}
     ADMIN_PATHS = {
         "/api/debug",
         "/api/routes",
@@ -68,6 +68,7 @@ class SupabaseAuthGuard:
         "/api/market/diamond-validation/run",
         "/api/alerts/telegram-settings",
         "/api/alerts/telegram-test",
+        "/api/admin/community/telegram",
     }
 
     def __init__(self) -> None:

@@ -5,6 +5,7 @@ import { AuthGate } from './auth/AuthGate.jsx'
 import { AuthProvider } from './auth/AuthProvider.jsx'
 import { CLIENT_BUILD_ID, reportClientError } from './utils/clientDiagnostics.js'
 import './styles.css'
+import './styles-modern-2026.css'
 
 const MODULE_RETRY_KEY = 'sh_app_module_retry_v385'
 const RETRY_WINDOW_MS = 60_000

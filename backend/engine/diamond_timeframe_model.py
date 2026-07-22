@@ -8,23 +8,25 @@ from typing import Any, Dict, Iterable, Optional
 class DiamondTimeframeFusionEngine:
     """Coordinate existing Diamond evidence around the 5M and 1H execution lanes."""
 
-    VERSION = "DIAMOND_DUAL_CORE_V2_5M_1H_SMT"
+    VERSION = "DIAMOND_DUAL_CORE_V3_REGIME_LIFECYCLE"
     PROFILES = {
         "SCALPING": {
             "label": "5M Scalp Core",
             "execution_timeframe": "5M",
             "context_timeframe": "15M",
             "anchor_timeframe": "1H",
-            "minimum_score": 70,
-            "strong_score": 84,
+            "minimum_score": 68,
+            "strong_score": 82,
+            "cadence": "3-5 qualified setups per 100 completed candles",
         },
         "SWING": {
             "label": "1H Intraday / Swing Core",
             "execution_timeframe": "1H",
             "context_timeframe": "4H",
             "anchor_timeframe": "1D",
-            "minimum_score": 74,
-            "strong_score": 85,
+            "minimum_score": 72,
+            "strong_score": 84,
+            "cadence": "2-4 qualified setups per 100 completed candles",
         },
     }
     MINIMUM_CANDLES = {"execution": 45, "context": 50, "anchor": 55}
@@ -51,6 +53,7 @@ class DiamondTimeframeFusionEngine:
         session_context: Optional[Dict[str, Any]] = None,
         smr_model: Optional[Dict[str, Any]] = None,
         smt_model: Optional[Dict[str, Any]] = None,
+        market_regime: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_symbol = str(symbol or "UNKNOWN").upper()
         style = "SWING" if str(trading_style or "SCALPING").upper() == "SWING" else "SCALPING"
@@ -60,6 +63,7 @@ class DiamondTimeframeFusionEngine:
         session = session_context or {}
         smr = smr_model or zones.get("smr_model") or context.get("smr_model") or {}
         smt = smt_model or zones.get("smt_model") or context.get("smt_model") or {}
+        regime = market_regime or context.get("market_regime") or {}
 
         rows = {
             "execution": self._candles(frames.get(profile["execution_timeframe"]) or []),
@@ -152,6 +156,16 @@ class DiamondTimeframeFusionEngine:
             and str(smt.get("direction") or "WAIT").upper() != zone_direction
         )
         execution_conflict = "execution_structure" in conflict_ids and "execution_momentum" in conflict_ids
+        regime_direction = str(regime.get("regime_direction") or "WAIT").upper()
+        regime_name = str(regime.get("regime") or "UNKNOWN").upper()
+        regime_strength = int(regime.get("strength") or 0)
+        strong_regime_conflict = bool(
+            regime_direction in {"BUY", "SELL"}
+            and zone_direction in {"BUY", "SELL"}
+            and regime_direction != zone_direction
+            and regime_strength >= 62
+        )
+        regime_volatility_lock = regime_name == "VOLATILITY_SHOCK"
         hard_conflicts = [
             name
             for name, active in (
@@ -160,6 +174,7 @@ class DiamondTimeframeFusionEngine:
                 ("SMR_CONFLICT", smr_conflict),
                 ("SMT_CONFLICT", smt_conflict),
                 ("EXECUTION_CONFLICT", execution_conflict),
+                ("STRONG_REGIME_CONFLICT", strong_regime_conflict),
             )
             if active
         ]
@@ -169,7 +184,7 @@ class DiamondTimeframeFusionEngine:
         news_locked = news.get("execution_gate") == "BLOCK_NEW_ENTRIES"
         smr_session = smr.get("session") or {}
         session_allowed = smr_session.get("execution_allowed") is not False
-        volatility_shock = bool(metrics["execution"]["volatility_shock"])
+        volatility_shock = bool(metrics["execution"]["volatility_shock"] or regime_volatility_lock)
 
         if not feed_matched:
             state, gate = "DATA_WAIT", "WAIT_DATA"
@@ -199,6 +214,15 @@ class DiamondTimeframeFusionEngine:
             state, gate = "CORE_WEAK", "WATCH"
             next_trigger = self._next_concept(concepts)
 
+        confidence_label = self._confidence_label(
+            gate,
+            zone_direction,
+            consensus_direction,
+            regime_direction,
+            concepts,
+        )
+        lifecycle = self._public_lifecycle(zones, gate)
+
         return {
             "status": "READY",
             "engine": self.VERSION,
@@ -212,6 +236,15 @@ class DiamondTimeframeFusionEngine:
             "consensus_direction": consensus_direction,
             "score": score,
             "grade": self._grade(score),
+            "confidence_label": confidence_label,
+            "lifecycle": lifecycle,
+            "market_regime": {
+                "regime": regime_name,
+                "direction": regime_direction,
+                "strength": regime_strength,
+                "strength_band": regime.get("strength_band") or "UNKNOWN",
+                "pullback_state": regime.get("pullback_state") or "WAITING",
+            },
             "agreement": {
                 "aligned": sum(item["state"] == "ALIGNED" for item in concepts),
                 "neutral": sum(item["state"] == "NEUTRAL" for item in concepts),
@@ -301,7 +334,46 @@ class DiamondTimeframeFusionEngine:
         key_zones["dual_core_state"] = model.get("state")
         key_zones["dual_core_gate"] = gate
         key_zones["dual_core_score"] = score
+        key_zones["confidence_label"] = model.get("confidence_label")
+        key_zones["public_lifecycle"] = model.get("lifecycle")
+        key_zones["regime_validation"] = model.get("market_regime")
         return key_zones
+
+    @staticmethod
+    def _confidence_label(
+        gate: str,
+        zone_direction: str,
+        consensus_direction: str,
+        regime_direction: str,
+        concepts: list[Dict[str, Any]],
+    ) -> str:
+        if gate == "BLOCK_CONFLICT" or (
+            regime_direction in {"BUY", "SELL"}
+            and zone_direction in {"BUY", "SELL"}
+            and regime_direction != zone_direction
+        ):
+            return "Counter-Trend Risk"
+        aligned_ids = {item["id"] for item in concepts if item.get("state") == "ALIGNED"}
+        if gate == "CONFIRMED" and zone_direction == consensus_direction:
+            return "Trend Aligned"
+        if {"origin_evidence", "smr_sequence"} & aligned_ids:
+            return "Liquidity Confirmed"
+        return "Wait for Rejection"
+
+    @staticmethod
+    def _public_lifecycle(zones: Dict[str, Any], gate: str) -> str:
+        primary = zones.get("primary_zone") or {}
+        latest = zones.get("latest_entry_event") or {}
+        if latest and gate == "CONFIRMED":
+            return "READY"
+        lifecycle = str(primary.get("lifecycle") or "").upper()
+        if lifecycle in {"TESTED", "WEAKENED"}:
+            return "TESTED"
+        if lifecycle == "FLIPPED":
+            return "FAILED"
+        if primary:
+            return "READY" if gate == "CONFIRMED" else "WATCHING"
+        return "WATCHING"
 
     def _frame_metrics(self, rows: list[Dict[str, Any]]) -> Dict[str, Any]:
         closes = [row["close"] for row in rows]
@@ -613,6 +685,15 @@ class DiamondTimeframeFusionEngine:
             "consensus_direction": "WAIT",
             "score": 0,
             "grade": "D",
+            "confidence_label": "Wait for Rejection",
+            "lifecycle": "WATCHING",
+            "market_regime": {
+                "regime": "UNKNOWN",
+                "direction": "WAIT",
+                "strength": 0,
+                "strength_band": "UNKNOWN",
+                "pullback_state": "WAITING",
+            },
             "agreement": {"aligned": 0, "neutral": 0, "conflicts": 0, "total": len(self.CONCEPT_WEIGHTS)},
             "concepts": [],
             "hard_conflicts": [],

@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional
 class MarketRegimeEngine:
     """Classify closed-candle conditions and veto unsafe setup contexts."""
 
-    VERSION = "MARKET_REGIME_V2_LOCATION_GUARD"
+    VERSION = "MARKET_REGIME_V3_ADAPTIVE_PULLBACK"
     MINIMUM_CANDLES = 60
     THRESHOLDS = {
         "trend_efficiency": 0.32,
@@ -98,6 +98,13 @@ class MarketRegimeEngine:
             latest_range_atr,
         )
         strength = self._strength(regime, efficiency, ema_spread_atr, ema_slope_atr, volatility_ratio, latest_range_atr)
+        strength_band = self._strength_band(strength)
+        pullback_state = self._pullback_state(
+            regime,
+            regime_direction,
+            ema_distance_atr,
+            range_position,
+        )
         location_guard = self._location_guard(direction, ema_distance_atr, range_position)
         gate, reason, next_trigger = self._execution_gate(
             regime,
@@ -118,6 +125,8 @@ class MarketRegimeEngine:
             "execution_gate": gate,
             "allows_new_entry": gate in {"OPEN", "OPEN_RANGE_EDGE"},
             "strength": strength,
+            "strength_band": strength_band,
+            "pullback_state": pullback_state,
             "reason": reason,
             "next_trigger": next_trigger,
             "metrics": {
@@ -139,8 +148,47 @@ class MarketRegimeEngine:
             "completed_candles": len(rows),
             "latest_completed_time": rows[-1]["time"],
             "uses_completed_candles_only": True,
-            "changes_signal_logic": False,
+            "changes_signal_logic": True,
         }
+
+    @staticmethod
+    def _strength_band(strength: int) -> str:
+        if strength >= 80:
+            return "STRONG"
+        if strength >= 62:
+            return "ESTABLISHED"
+        if strength >= 44:
+            return "DEVELOPING"
+        return "WEAK"
+
+    @staticmethod
+    def _pullback_state(
+        regime: str,
+        regime_direction: str,
+        ema_distance_atr: float,
+        range_position: float,
+    ) -> str:
+        if regime == "VOLATILITY_SHOCK":
+            return "UNSTABLE"
+        if regime_direction == "BUY":
+            if ema_distance_atr > 1.8 or range_position >= 0.88:
+                return "EXTENDED"
+            if ema_distance_atr <= 0.45:
+                return "PULLBACK_READY"
+            return "TREND_CONTINUATION"
+        if regime_direction == "SELL":
+            if ema_distance_atr < -1.8 or range_position <= 0.12:
+                return "EXTENDED"
+            if ema_distance_atr >= -0.45:
+                return "PULLBACK_READY"
+            return "TREND_CONTINUATION"
+        if regime == "RANGE":
+            if range_position <= 0.25:
+                return "LOWER_EDGE"
+            if range_position >= 0.75:
+                return "UPPER_EDGE"
+            return "MID_RANGE"
+        return "TRANSITION"
 
     def _classify(
         self,

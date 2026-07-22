@@ -171,6 +171,27 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
         self.assertEqual(restored["chat_id"], "-100...444")
         self.assertNotIn("persistent-token", str(restored))
 
+    def test_telegram_community_link_is_saved_replaced_and_removed(self):
+        settings_path = Path(self.temp_dir.name) / "community-settings.json"
+        community_settings = ProviderSettings(str(settings_path))
+
+        saved = community_settings.save_telegram_community_url("https://t.me/sh_market_group")
+        replaced = community_settings.save_telegram_community_url("https://telegram.me/+invite_code")
+        removed = community_settings.save_telegram_community_url("")
+
+        self.assertEqual(saved["url"], "https://t.me/sh_market_group")
+        self.assertEqual(replaced["url"], "https://telegram.me/+invite_code")
+        self.assertTrue(replaced["configured"])
+        self.assertFalse(removed["configured"])
+        self.assertIsNone(removed["url"])
+
+    def test_telegram_community_link_rejects_non_telegram_hosts(self):
+        settings_path = Path(self.temp_dir.name) / "invalid-community-settings.json"
+        community_settings = ProviderSettings(str(settings_path))
+
+        with self.assertRaises(ValueError):
+            community_settings.save_telegram_community_url("https://example.com/not-telegram")
+
 
 if __name__ == "__main__":
     unittest.main()

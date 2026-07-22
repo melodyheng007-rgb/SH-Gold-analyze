@@ -19,7 +19,7 @@ import pandas as pd
 import requests
 import urllib3
 from requests.certs import where as requests_ca_bundle
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from .data_loader import candles_to_records, load_ohlcv
 
@@ -150,6 +150,7 @@ class ProviderSettings:
             "oanda_api_token": "OANDA_API_TOKEN",
             "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
             "telegram_chat_id": "TELEGRAM_CHAT_ID",
+            "telegram_community_url": "TELEGRAM_COMMUNITY_URL",
         }.get(name, name.upper())
         data = self._load()
 
@@ -170,6 +171,10 @@ class ProviderSettings:
                 return saved
         if name == "telegram_chat_id":
             saved = str(data.get("telegram_chat_id") or "").strip()
+            if saved:
+                return saved
+        if name == "telegram_community_url":
+            saved = str(data.get("telegram_community_url") or "").strip()
             if saved:
                 return saved
 
@@ -265,10 +270,45 @@ class ProviderSettings:
             "telegram_connection_verified": bool(self._load().get("telegram_connection_verified", False)),
             "telegram_verified_at": self.get("telegram_verified_at") or None,
             "telegram_bot_username": self.get("telegram_bot_username") or None,
+            "telegram_community_configured": bool(self.telegram_community_status()["url"]),
             "test_mode_enabled": self.test_mode_enabled(),
             "data_mode": self.data_mode(),
             "show_stale_history": self.show_stale_history(),
         }
+
+    @staticmethod
+    def normalize_telegram_community_url(value: str) -> str:
+        community_url = str(value or "").strip()
+        if not community_url:
+            return ""
+        parsed = urlparse(community_url)
+        host = str(parsed.hostname or "").lower()
+        path = str(parsed.path or "").strip("/")
+        if parsed.scheme != "https" or host not in {"t.me", "telegram.me"} or not path:
+            raise ValueError("Use a valid Telegram invite link beginning with https://t.me/.")
+        return f"https://{host}/{path}"
+
+    def telegram_community_status(self) -> Dict[str, Any]:
+        raw_url = self.get("telegram_community_url")
+        try:
+            url = self.normalize_telegram_community_url(raw_url)
+        except ValueError:
+            url = ""
+        return {
+            "configured": bool(url),
+            "url": url or None,
+        }
+
+    def save_telegram_community_url(self, value: str) -> Dict[str, Any]:
+        community_url = self.normalize_telegram_community_url(value)
+        with self._lock:
+            data = self._load_unlocked()
+            if community_url:
+                data["telegram_community_url"] = community_url
+            else:
+                data.pop("telegram_community_url", None)
+            self._write_unlocked(data)
+        return self.telegram_community_status()
 
     @staticmethod
     def _masked_chat_id(value: str) -> Optional[str]:

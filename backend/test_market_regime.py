@@ -79,6 +79,15 @@ class MarketRegimeEngineTests(unittest.TestCase):
         self.assertEqual(result["execution_gate"], "OPEN")
         self.assertTrue(result["uses_completed_candles_only"])
 
+    def test_v3_exposes_strength_and_pullback_state(self):
+        rows = candles_from_closes([100.0 + index * 0.35 for index in range(100)])
+
+        result = self.engine.evaluate("XAUUSD", "5M", rows, "BUY")
+
+        self.assertIn(result["strength_band"], {"STRONG", "ESTABLISHED", "DEVELOPING", "WEAK"})
+        self.assertIn(result["pullback_state"], {"EXTENDED", "PULLBACK_READY", "TREND_CONTINUATION"})
+        self.assertTrue(result["changes_signal_logic"])
+
 
 if __name__ == "__main__":
     unittest.main()

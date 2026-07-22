@@ -7521,12 +7521,28 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .diamond-status-decision { gap: 1px; padding: 4px 7px !important; }
   .diamond-status-decision > span { font-size: 6px; }
   .diamond-status-decision > strong { font-size: 9px; }
-  .diamond-status-next { display: none; }
+  .diamond-status-next { display: block; font-size: 6px !important; }
   .diamond-status-mobile-risk { display: none; }
   .diamond-status-signal { gap: 2px 5px; padding: 5px !important; }
   .diamond-status-signal span { min-width: 32px; font-size: 7px; }
   .diamond-status-signal strong { font-size: 8px; }
   .diamond-status-signal b { font-size: 7px; }
+  .intelligence-dock:not(.collapsed) {
+    position: fixed;
+    z-index: 70;
+    inset: auto 6px 54px;
+    max-height: min(72dvh, 620px);
+    overflow: hidden;
+    border: 1px solid #384456;
+    border-radius: 6px 6px 0 0;
+    box-shadow: 0 -18px 50px rgba(0, 0, 0, .58);
+  }
+  .intelligence-dock:not(.collapsed) .intelligence-dock-reveal {
+    max-height: calc(min(72dvh, 620px) - 42px);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .intelligence-dock:not(.collapsed) .intelligence-dock-content { overflow: visible; }
   .diamond-audit-stats { grid-template-columns: repeat(5, minmax(64px, 1fr)); overflow-x: auto; }
   .diamond-audit-stats p { min-width: 64px; padding: 7px; }
   .diamond-audit-list { grid-template-columns: 1fr; max-height: 430px; }
@@ -7681,6 +7697,21 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .auth-divider::before,
 .auth-divider::after { height: 1px; flex: 1; background: #282e36; content: ''; }
 .auth-panel form { display: grid; gap: 12px; }
+.turnstile-gate {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #303844;
+  border-radius: 5px;
+  background: #0a0e13;
+}
+.turnstile-gate > div:first-child { display: flex; align-items: center; gap: 6px; color: #8f9baa; font-size: 8px; font-weight: 850; text-transform: uppercase; }
+.turnstile-gate.verified { border-color: rgba(73, 210, 137, .5); }
+.turnstile-gate.verified > div:first-child { color: #49d289; }
+.turnstile-gate.error { border-color: rgba(247, 108, 127, .55); }
+.turnstile-gate small { color: #f07f8e; font-size: 8px; line-height: 1.4; }
+.turnstile-widget { width: 100%; min-height: 1px; overflow: hidden; }
 .auth-field { display: grid; gap: 6px; }
 .auth-field > span { color: #9da5b0; font-size: 9px; font-weight: 800; }
 .auth-field > div {

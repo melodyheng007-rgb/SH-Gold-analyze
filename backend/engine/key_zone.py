@@ -15,8 +15,8 @@ class DiamondZoneEngine:
 
     def __init__(
         self,
-        strategy_name: str = "SH_DIAMOND_ZONE_V8_5_ADAPTIVE_SMT",
-        engine_version: str = "DIAMOND_V8_5_SETUP_SMT_GUARDED",
+        strategy_name: str = "SH_DIAMOND_ZONE_V8_6_REGIME_ADAPTIVE",
+        engine_version: str = "DIAMOND_V8_6_SETUP_REGIME_GUARDED",
         profile_adjustments: Optional[Dict[str, float]] = None,
         profile_suffix: str = "",
     ) -> None:

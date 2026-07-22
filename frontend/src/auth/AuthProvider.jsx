@@ -107,13 +107,17 @@ export function AuthProvider({ children }) {
     closeAuth() {
       setAuthDialogOpen(false)
     },
-    async signIn(email, password) {
+    async signIn(email, password, captchaToken = '') {
       if (!supabase) throw new Error('Account service is unavailable.')
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+        options: captchaToken ? { captchaToken } : undefined,
+      })
       if (error) throw error
       return data
     },
-    async signUp(email, password, fullName) {
+    async signUp(email, password, fullName, captchaToken = '') {
       if (!supabase) throw new Error('Account service is unavailable.')
       const { data, error } = await supabase.auth.signUp({
         email,
@@ -121,6 +125,7 @@ export function AuthProvider({ children }) {
         options: {
           data: { full_name: fullName },
           emailRedirectTo: authRedirectUrl(),
+          ...(captchaToken ? { captchaToken } : {}),
         },
       })
       if (error) throw error
@@ -136,10 +141,11 @@ export function AuthProvider({ children }) {
       if (error) throw error
       return data
     },
-    async sendPasswordReset(email) {
+    async sendPasswordReset(email, captchaToken = '') {
       if (!supabase) throw new Error('Account service is unavailable.')
       const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: authRedirectUrl(true),
+        ...(captchaToken ? { captchaToken } : {}),
       })
       if (error) throw error
       return data

@@ -22,6 +22,7 @@ import {
   LogOut,
   RefreshCw,
   Search,
+  Send,
   Server,
   Settings,
   ShieldCheck,
@@ -71,6 +72,7 @@ import {
   getMarketOverview,
   getMarketSignalView,
   getTelegramAlertSettings,
+  getTelegramCommunity,
   getOverlayStatus,
   getProviderCredentials,
   getProviderStatus,
@@ -94,6 +96,7 @@ import {
   uploadCsvForBacktest,
   verifyOandaFeed,
   saveTelegramAlertSettings,
+  saveTelegramCommunity,
   testTelegramAlert,
   acknowledgeMarketAlert,
 } from './api.js'
@@ -134,6 +137,7 @@ const MARKET_ASSETS = {
   XAUUSD: { label: 'Gold', tradingViewSymbol: 'OANDA:XAUUSD' },
   BTCUSD: { label: 'Bitcoin', tradingViewSymbol: 'BINANCE:BTCUSDT' },
 }
+const DEFAULT_TELEGRAM_COMMUNITY_URL = String(import.meta.env.VITE_TELEGRAM_COMMUNITY_URL || '').trim()
 const MENU_GROUP_ICONS = {
   Chart: BarChart3,
   Feed: ShieldCheck,
@@ -151,8 +155,8 @@ const CHART_MODES = {
 const NO_HISTORY_MESSAGE = 'No candle data available. Start live builder or import recent history.'
 const GAP_MESSAGE = 'History gap detected. Live price is not aligned with local history.'
 const FULL_ANALYSIS_MESSAGE = 'Full analysis requires recent 1D, 4H, 1H, 15M, and 5M candle history.'
-const APP_VERSION = 'V3.8.5'
-const APP_TITLE = 'SH Market Analyzer V3.8.5 - Adaptive Diamond Intelligence'
+const APP_VERSION = 'V3.8.6'
+const APP_TITLE = 'SH Market Analyzer V3.8.6 - Adaptive Diamond Intelligence'
 const DEFAULT_LOCKED_MODE = {
   locked_mode: 'NO_DATA_MODE',
   data_mode: 'NO_DATA_MODE',
@@ -772,7 +776,7 @@ function SymbolBadge({ latestPrice, asset = 'XAUUSD' }) {
   const config = MARKET_ASSETS[asset] || MARKET_ASSETS.XAUUSD
   return (
     <div className="symbol-badge">
-      <span>SH Market Analyzer <b>V3.8.5</b></span>
+      <span>SH Market Analyzer <b>V3.8.6</b></span>
       <div><strong>{asset}</strong><em>{config.label}</em></div>
       <p>{asPrice(latestPrice)}</p>
     </div>
@@ -813,12 +817,14 @@ function AccountControl() {
   )
 }
 
-function AccountDrawer({ open, onClose }) {
+function AccountDrawer({ open, communityUrl = '', onClose }) {
   const { user, signOut } = useAuth()
   const [busy, setBusy] = useState(false)
   if (!open) return null
   const name = String(user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'User')
   const initial = name.trim().charAt(0).toUpperCase() || 'U'
+  const activeCommunityUrl = String(communityUrl || DEFAULT_TELEGRAM_COMMUNITY_URL).trim()
+  const communityReady = /^https:\/\/(t\.me|telegram\.me)\//i.test(activeCommunityUrl)
   const handleSignOut = async () => {
     setBusy(true)
     try {
@@ -839,13 +845,32 @@ function AccountDrawer({ open, onClose }) {
           <i>{initial}</i>
           <span><strong>{name}</strong><small>{user?.email || 'Signed in'}</small></span>
         </div>
-        <div className="account-focus-status">
-          <ShieldCheck size={15} />
-          <span><strong>Protected workspace</strong><small>Your market preferences stay connected to this session.</small></span>
+        <div className="account-focus-content">
+          <div className="account-focus-status">
+            <ShieldCheck size={16} />
+            <span><strong>Protected workspace</strong><small>Your market preferences stay connected to this session.</small></span>
+          </div>
+          <a
+            className={`account-community-link ${communityReady ? '' : 'unavailable'}`}
+            href={communityReady ? activeCommunityUrl : undefined}
+            target={communityReady ? '_blank' : undefined}
+            rel={communityReady ? 'noreferrer' : undefined}
+            aria-disabled={!communityReady}
+            onClick={event => {
+              if (!communityReady) event.preventDefault()
+            }}
+          >
+            <i><Send size={18} /></i>
+            <span>
+              <strong>{communityReady ? 'Join Telegram Community' : 'Telegram Community'}</strong>
+              <small>{communityReady ? 'Diamond updates, market notes and community discussion.' : 'Official invite link is being prepared.'}</small>
+            </span>
+            <ChevronRight size={18} />
+          </a>
+          <button className="account-focus-signout" onClick={handleSignOut} disabled={busy}>
+            <LogOut size={15} /><span>{busy ? 'Signing out' : 'Sign out'}</span>
+          </button>
         </div>
-        <button className="account-focus-signout" onClick={handleSignOut} disabled={busy}>
-          <LogOut size={15} /><span>{busy ? 'Signing out' : 'Sign out'}</span>
-        </button>
       </section>
     </aside>
   )
@@ -1629,7 +1654,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
     <section className="confidence-engine" aria-label="Confidence Engine diagnostics and strategy governance">
       <header>
         <span><ShieldCheck size={14} /> Confidence Engine</span>
-        <strong>V3.8.5</strong>
+        <strong>V3.8.6</strong>
         <em className={summary.tone}>{stageLabel(summary.status)}</em>
         <small>{summary.readinessPassed}/{summary.readinessTotal} execution gates ready</small>
       </header>
@@ -1949,14 +1974,13 @@ function SimpleDiamondHistory({ history, onReplay, replayKey }) {
   const invalidCount = Number(lifecycle.invalidated || 0) + Number(lifecycle.expired || 0) + Number(lifecycle.ambiguous || 0)
   const statusGroup = status => {
     const value = String(status || 'MONITORING').toUpperCase()
-    if (value === 'WON') return 'WON'
-    if (value === 'LOST') return 'LOST'
-    if (['MONITORING', 'OPEN', 'WAITING_ENTRY'].includes(value)) return 'OPEN'
-    return 'INVALID'
+    if (value === 'WON') return 'HELD'
+    if (['MONITORING', 'OPEN', 'WAITING_ENTRY'].includes(value)) return 'PENDING'
+    return 'FAILED'
   }
   const filtered = entries.filter(entry => filter === 'ALL' || statusGroup(entry.verification_status) === filter)
   const visible = filtered.slice(0, visibleCount)
-  const tone = status => statusGroup(status) === 'WON' ? 'good' : statusGroup(status) === 'LOST' ? 'bad' : statusGroup(status) === 'INVALID' ? 'warn' : ''
+  const tone = status => statusGroup(status) === 'HELD' ? 'good' : statusGroup(status) === 'FAILED' ? 'bad' : 'warn'
 
   useEffect(() => {
     setFilter('ALL')
@@ -1973,19 +1997,18 @@ function SimpleDiamondHistory({ history, onReplay, replayKey }) {
         </div>
         <div className="diamond-audit-stats">
           <p><span>Saved</span><strong>{stats.total ?? entries.length}</strong></p>
-          <p className="good"><span>Wins</span><strong>{stats.won ?? 0}</strong></p>
-          <p className="bad"><span>Losses</span><strong>{stats.lost ?? 0}</strong></p>
-          <p><span>Open</span><strong>{openCount}</strong></p>
-          <p className="warn"><span>Invalid</span><strong>{invalidCount}</strong></p>
+          <p className="good"><span>Held</span><strong>{stats.won ?? 0}</strong></p>
+          <p className="bad"><span>Failed</span><strong>{Number(stats.lost || 0) + invalidCount}</strong></p>
+          <p className="warn"><span>Pending</span><strong>{openCount}</strong></p>
+          <p><span>Resolved</span><strong>{Number(stats.won || 0) + Number(stats.lost || 0)}</strong></p>
         </div>
       </header>
       <div className="diamond-audit-controls" role="group" aria-label="Filter Diamond history">
         {[
           ['ALL', 'All', stats.total ?? entries.length],
-          ['WON', 'Wins', stats.won ?? 0],
-          ['LOST', 'Losses', stats.lost ?? 0],
-          ['OPEN', 'Open', openCount],
-          ['INVALID', 'Invalid', invalidCount],
+          ['HELD', 'Held', stats.won ?? 0],
+          ['FAILED', 'Failed', Number(stats.lost || 0) + invalidCount],
+          ['PENDING', 'Pending', openCount],
         ].map(([id, label, value]) => (
           <button className={filter === id ? 'active' : ''} key={id} onClick={() => { setFilter(id); setVisibleCount(24) }}>
             <span>{label}</span><b>{value}</b>
@@ -1997,7 +2020,7 @@ function SimpleDiamondHistory({ history, onReplay, replayKey }) {
           {visible.map(entry => {
             const score = clampPercent(diamondHistoricalScore(entry))
             const grade = entry.peak_diamond_grade || entry.diamond_grade || diamondGradeFromScore(score, false, diamondVisibleFloor(entry)) || '-'
-            const status = String(entry.verification_status || 'MONITORING').replaceAll('_', ' ')
+            const status = statusGroup(entry.verification_status)
             const side = String(entry.entry_side || entry.direction || 'WAIT').toUpperCase()
             return (
               <article className={`${side.toLowerCase()} ${tone(entry.verification_status)} ${replayKey === entry.zone_key ? 'replaying' : ''}`} key={entry.zone_key}>
@@ -2660,24 +2683,22 @@ function IntelligenceDock({ activeTab, onTab, collapsed, onToggle, analysis, tra
   )
 }
 
-function DiamondStatusBar({ signal, decision, nextGate, riskGuide, adaptiveProfile, detailsOpen, onDetails, onHistory }) {
+function DiamondStatusBar({ signal, decision, nextGate, adaptiveProfile, confidenceLabel, publicLifecycle, detailsOpen, onDetails, onHistory }) {
   const score = signal ? signalScore(signal) : 0
   const grade = signal ? signal.diamond_grade || diamondGradeFromScore(score, false, diamondVisibleFloor(signal)) : ''
   const rawSide = String(signal?.entry_side || signal?.direction || '').toUpperCase()
   const side = rawSide === 'BULLISH' ? 'BUY' : rawSide === 'BEARISH' ? 'SELL' : rawSide || 'WAIT'
   const zonePrice = signal?.line ?? signal?.marker_price
   const origin = String(signal?.origin_model || 'Scanning').replaceAll('_', ' ')
-  const lifecycle = String(signal?.lifecycle || 'Watching').replaceAll('_', ' ')
+  const lifecycle = String(publicLifecycle || signal?.lifecycle || 'Watching').replaceAll('_', ' ')
   const regime = String(adaptiveProfile?.regime || 'WAITING').replaceAll('_', ' ')
+  const simpleLabel = confidenceLabel || (side === 'WAIT' ? 'Wait for Rejection' : 'Trend Check')
   return (
     <section className={`diamond-status-bar ${side.toLowerCase()}`} aria-label="Diamond Zone status">
       <div className="diamond-status-decision">
         <span><Diamond size={13} /> Diamond Zone</span>
         <strong>{decision}</strong>
-        <small className="diamond-status-next">Next: {nextGate} / V7 {regime}</small>
-        <small className="diamond-status-mobile-risk">
-          SL {asPrice(riskGuide?.invalidation)} / TP {riskGuide?.targetLabel ? `${riskGuide.targetLabel} ${asPrice(riskGuide.target)}` : 'waiting'}
-        </small>
+        <small className="diamond-status-next">{simpleLabel} / {lifecycle}</small>
       </div>
       <div className="diamond-status-signal">
         <span className={side.toLowerCase()}>{side}</span>
@@ -2685,9 +2706,9 @@ function DiamondStatusBar({ signal, decision, nextGate, riskGuide, adaptiveProfi
         <b>{score || 0}%</b>
       </div>
       <div className="diamond-status-context">
-        <p title="SL belongs beyond the Engine invalidation boundary, not directly on the Diamond icon."><span>SL Boundary</span><strong className="risk">{asPrice(riskGuide?.invalidation)}</strong></p>
-        <p title={`${riskGuide?.method || 'Waiting for the next structural level'}${riskGuide?.riskReward ? ` Structural R:R 1:${riskGuide.riskReward}.` : ''}`}><span>TP Objective</span><strong className="target">{riskGuide?.targetLabel ? `${riskGuide.targetLabel} ${asPrice(riskGuide.target)}` : 'Waiting level map'}</strong></p>
-        <p title={`${origin} / ${lifecycle} / V7 ${regime} / Diamond ${asPrice(zonePrice)}`}><span>Next Gate</span><strong>{nextGate || 'Watching closed candles'}</strong></p>
+        <p><span>Lifecycle</span><strong>{lifecycle}</strong></p>
+        <p title={`${origin} / Diamond ${asPrice(zonePrice)}`}><span>Market</span><strong>{regime}</strong></p>
+        <p title={`${origin} / ${lifecycle} / ${regime} / Diamond ${asPrice(zonePrice)}`}><span>Next</span><strong>{nextGate || 'Watching closed candles'}</strong></p>
       </div>
       <div className="diamond-status-actions">
         <button onClick={onHistory} title="Open preserved Diamond proof"><ChartSpline size={14} /><span>Proof</span></button>
@@ -2939,26 +2960,26 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     const { CandlestickSeries, createChart, HistogramSeries } = chartEngine
     const chart = createChart(containerRef.current, {
       autoSize: true,
-      layout: { background: { color: '#07101f' }, textColor: '#c8cbd1', fontFamily: 'Inter, ui-sans-serif, system-ui' },
+      layout: { background: { color: '#061321' }, textColor: '#d4dde8', fontFamily: 'Inter, ui-sans-serif, system-ui' },
       grid: {
-        vertLines: { color: 'rgba(116, 137, 170, .20)' },
-        horzLines: { color: 'rgba(116, 137, 170, .20)' },
+        vertLines: { color: 'rgba(97, 130, 162, .17)' },
+        horzLines: { color: 'rgba(97, 130, 162, .17)' },
       },
-      rightPriceScale: { borderColor: '#475569', scaleMargins: { top: .08, bottom: .08 } },
-      timeScale: { borderColor: '#475569', timeVisible: true, secondsVisible: false, rightOffset: 7, barSpacing: 9, minBarSpacing: 4 },
+      rightPriceScale: { borderColor: '#3d5268', scaleMargins: { top: .08, bottom: .08 } },
+      timeScale: { borderColor: '#3d5268', timeVisible: true, secondsVisible: false, rightOffset: 7, barSpacing: 9, minBarSpacing: 4 },
       crosshair: {
         mode: 0,
-        vertLine: { color: 'rgba(226, 232, 240, .55)', style: LINE_STYLE.dashed, labelBackgroundColor: '#202938' },
-        horzLine: { color: 'rgba(226, 232, 240, .55)', style: LINE_STYLE.dashed, labelBackgroundColor: '#202938' },
+        vertLine: { color: 'rgba(113, 222, 248, .55)', style: LINE_STYLE.dashed, labelBackgroundColor: '#163447' },
+        horzLine: { color: 'rgba(113, 222, 248, .55)', style: LINE_STYLE.dashed, labelBackgroundColor: '#163447' },
       },
     })
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#f4ea2a',
-      downColor: '#f03a24',
-      borderUpColor: '#f4ea2a',
-      borderDownColor: '#f03a24',
-      wickUpColor: '#fff36b',
-      wickDownColor: '#ff5b42',
+      upColor: '#fff21f',
+      downColor: '#ff4738',
+      borderUpColor: '#fff21f',
+      borderDownColor: '#ff4738',
+      wickUpColor: '#fff77a',
+      wickDownColor: '#ff7468',
       priceFormat: { type: 'price', precision: asset === 'BTCUSD' ? 2 : 2, minMove: .01 },
     }, 0)
     const flowSeries = chart.addSeries(HistogramSeries, {
@@ -3152,6 +3173,8 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
         nextGate={nextGate}
         riskGuide={diamondRiskGuide}
         adaptiveProfile={keyZones?.adaptive_profile}
+        confidenceLabel={keyZones?.confidence_label}
+        publicLifecycle={keyZones?.public_lifecycle}
         detailsOpen={!dockCollapsed}
         onDetails={() => setDockCollapsed(value => !value)}
         onHistory={() => {
@@ -4748,6 +4771,11 @@ function MobileMenuDrawer({
   setTelegramEnabled = () => {},
   telegramVerification = null,
   onSaveTelegram = () => {},
+  telegramCommunity = null,
+  telegramCommunityInput = '',
+  setTelegramCommunityInput = () => {},
+  telegramCommunitySave = null,
+  onSaveTelegramCommunity = () => {},
   providerAlignment = null,
   onUploadCsv = () => {},
   onImportHistory = () => {},
@@ -4964,6 +4992,52 @@ function MobileMenuDrawer({
           <section className="drawer-section provider-config-section telegram-config-section">
             <h3><Bell size={15} /> Telegram Group Alerts</h3>
             <div className="provider-config-form">
+              <div className="telegram-community-admin">
+                <div className="telegram-community-admin-head">
+                  <i><Send size={16} /></i>
+                  <span>
+                    <strong>Community Join Link</strong>
+                    <small>Shown to every user inside the Account panel.</small>
+                  </span>
+                  <b className={telegramCommunity?.configured ? 'good' : 'warn'}>
+                    {telegramCommunity?.configured ? 'LIVE' : 'HIDDEN'}
+                  </b>
+                </div>
+                <label>
+                  <span>Telegram group invite link</span>
+                  <input
+                    type="url"
+                    value={telegramCommunityInput}
+                    onChange={event => setTelegramCommunityInput(event.target.value)}
+                    placeholder="https://t.me/your_group"
+                    autoComplete="url"
+                    spellCheck="false"
+                  />
+                </label>
+                <div className="telegram-community-admin-actions">
+                  {telegramCommunity?.configured && (
+                    <a href={telegramCommunity.url} target="_blank" rel="noreferrer">
+                      <Globe2 size={14} /> Open group
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    className="provider-save-button"
+                    onClick={onSaveTelegramCommunity}
+                    disabled={backendOffline || telegramCommunitySave?.status === 'SAVING'}
+                  >
+                    {telegramCommunitySave?.status === 'SAVING'
+                      ? 'Saving...'
+                      : telegramCommunityInput.trim() ? 'Save Community Link' : 'Remove Community Link'}
+                  </button>
+                </div>
+                {telegramCommunitySave && telegramCommunitySave.status !== 'SAVING' && (
+                  <div className={`provider-verification ${telegramCommunitySave.ok ? 'good' : 'bad'}`}>
+                    <strong>{telegramCommunitySave.status || 'NOT SAVED'}</strong>
+                    <span>{telegramCommunitySave.message || 'Could not save the community link.'}</span>
+                  </div>
+                )}
+              </div>
               <div className="provider-config-status">
                 <span>Delivery</span>
                 <strong>Confirmed Diamonds</strong>
@@ -5064,6 +5138,8 @@ function MobileMenuDrawer({
           <p><span>Analysis Feed</span><strong>{providerAlignment?.provider || (asset === 'XAUUSD' ? 'OANDA' : 'Binance')}</strong></p>
           <p><span>Feed Match</span><strong className={providerAlignment?.matched ? 'good' : 'warn'}>{providerAlignment?.status || 'PENDING'}</strong></p>
           <p><span>Market Data</span><strong>{providerAlignment?.matched ? 'Ready' : 'Waiting'}</strong></p>
+          {isAdmin && <p><span>Bot Guard</span><strong>{health?.human_verification?.configured ? 'TURNSTILE' : 'NOT CONFIGURED'}</strong></p>}
+          {isAdmin && <p><span>Engine Core</span><strong>{health?.diamond_timeframe_engine || '-'}</strong></p>}
         </div>
         {asset === 'XAUUSD' && activeMenuGroup?.group === 'Feed' && (
           <div className="drawer-counts">
@@ -5181,6 +5257,12 @@ export default function App() {
   const [telegramChatId, setTelegramChatId] = useState('')
   const [telegramEnabled, setTelegramEnabled] = useState(false)
   const [telegramVerification, setTelegramVerification] = useState(null)
+  const [telegramCommunity, setTelegramCommunity] = useState({
+    configured: /^https:\/\/(t\.me|telegram\.me)\//i.test(DEFAULT_TELEGRAM_COMMUNITY_URL),
+    url: DEFAULT_TELEGRAM_COMMUNITY_URL || null,
+  })
+  const [telegramCommunityInput, setTelegramCommunityInput] = useState(DEFAULT_TELEGRAM_COMMUNITY_URL)
+  const [telegramCommunitySave, setTelegramCommunitySave] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [isDataHubOpen, setIsDataHubOpen] = useState(false)
   const [overlayMenuOpen, setOverlayMenuOpen] = useState(false)
@@ -5202,6 +5284,7 @@ export default function App() {
   const liveCandleSignatureRef = useRef('')
   const liveAnalysisSignatureRef = useRef('')
   const oandaSettingsHydratedRef = useRef(false)
+  const telegramCommunityDirtyRef = useRef(false)
   const timeframeSwitchIdRef = useRef(0)
   const chartViewCacheRef = useRef(new Map(initialView.snapshot
     ? [[`${initialView.asset}:${initialView.timeframe}`, initialView.snapshot]]
@@ -5459,11 +5542,17 @@ export default function App() {
       const telegramSettingsPromise = isAdmin
         ? safeCall('telegram-alert-settings', getTelegramAlertSettings, { telegram: { status: 'DISABLED', enabled: false } })
         : Promise.resolve({ telegram: null })
+      const telegramCommunityPromise = safeCall('telegram-community', getTelegramCommunity, {
+        community: {
+          configured: /^https:\/\/(t\.me|telegram\.me)\//i.test(DEFAULT_TELEGRAM_COMMUNITY_URL),
+          url: DEFAULT_TELEGRAM_COMMUNITY_URL || null,
+        },
+      })
       signalViewPromise.then(result => {
         if (!selectionIsCurrent()) return
         applyChartViewSnapshot(result, nextAsset, nextTimeframe, true)
       })
-      const [backendStatusResult, provider, engine, readiness, modeResult, stateResult, integrityResult, signalViewResult, explanationResult, overviewResult, mtfResult, diamondHistoryResult, diamondValidationResult, setupTrackerResult, governanceResult, alertsResult, providerCredentials, telegramResult] = await Promise.all([
+      const [backendStatusResult, provider, engine, readiness, modeResult, stateResult, integrityResult, signalViewResult, explanationResult, overviewResult, mtfResult, diamondHistoryResult, diamondValidationResult, setupTrackerResult, governanceResult, alertsResult, providerCredentials, telegramResult, telegramCommunityResult] = await Promise.all([
         safeCall('backend-status', getBackendStatus, { backend_status: 'ONLINE', data_mode_lock: DEFAULT_LOCKED_MODE }),
         safeCall('provider-status', getProviderStatus, { status: 'NO_DATA', provider_name: '-', latest_price: null, settings: {} }),
         safeCall('engine-status', getEngineStatus, { engine_mode: 'balanced', engine_core_version: 'V4' }),
@@ -5482,6 +5571,7 @@ export default function App() {
         marketAlertsPromise,
         safeCall('provider-credentials', getProviderCredentials, { settings: {}, oanda_restore: null }),
         telegramSettingsPromise,
+        telegramCommunityPromise,
       ])
       if (!selectionIsCurrent()) return
       const credentialSettings = Object.keys(safeObject(providerCredentials?.settings)).length
@@ -5543,6 +5633,13 @@ export default function App() {
       if (telegramResult?.telegram) {
         setTelegramSettings(telegramResult.telegram)
         setTelegramEnabled(Boolean(telegramResult.telegram.enabled))
+      }
+      if (telegramCommunityResult?.community) {
+        const nextCommunity = telegramCommunityResult.community
+        setTelegramCommunity(nextCommunity)
+        if (!telegramCommunityDirtyRef.current) {
+          setTelegramCommunityInput(nextCommunity.url || '')
+        }
       }
       setSetupTracker(setupTrackerResult)
       setSessionFramework(signalViewResult?.session_framework || null)
@@ -5806,6 +5903,30 @@ export default function App() {
       }
       setTelegramVerification(failure)
       setMessage(failure.message)
+    }
+  }
+
+  async function saveTelegramCommunityLink() {
+    setTelegramCommunitySave({ status: 'SAVING', ok: false })
+    try {
+      const result = await saveTelegramCommunity(telegramCommunityInput.trim())
+      const nextCommunity = result.community || { configured: false, url: null }
+      setTelegramCommunity(nextCommunity)
+      setTelegramCommunityInput(nextCommunity.url || '')
+      telegramCommunityDirtyRef.current = false
+      setTelegramCommunitySave({
+        ok: true,
+        status: nextCommunity.configured ? 'SAVED' : 'REMOVED',
+        message: result.message || (nextCommunity.configured ? 'Community link saved.' : 'Community link removed.'),
+      })
+      setMessage(result.message || 'Telegram Community link updated.')
+    } catch (err) {
+      const failure = err?.payload || {}
+      setTelegramCommunitySave({
+        ok: false,
+        status: failure.code || 'NOT SAVED',
+        message: failure.message || err?.message || 'Could not save the community link.',
+      })
     }
   }
 
@@ -6458,7 +6579,7 @@ export default function App() {
   }
 
   return (
-    <main className="app terminal-app">
+    <main className="app terminal-app modern-ui-2026">
       <TopToolbar
         asset={asset}
         timeframe={timeframe}
@@ -6648,7 +6769,11 @@ export default function App() {
         onClose={() => setAlertCenterOpen(false)}
       />
 
-      <AccountDrawer open={accountPanelOpen} onClose={() => setAccountPanelOpen(false)} />
+      <AccountDrawer
+        open={accountPanelOpen}
+        communityUrl={telegramCommunity?.url || DEFAULT_TELEGRAM_COMMUNITY_URL}
+        onClose={() => setAccountPanelOpen(false)}
+      />
 
       <MobileMenuDrawer
         open={menuOpen}
@@ -6703,6 +6828,15 @@ export default function App() {
         setTelegramEnabled={setTelegramEnabled}
         telegramVerification={telegramVerification}
         onSaveTelegram={saveTelegramAlerts}
+        telegramCommunity={telegramCommunity}
+        telegramCommunityInput={telegramCommunityInput}
+        setTelegramCommunityInput={value => {
+          telegramCommunityDirtyRef.current = true
+          setTelegramCommunityInput(value)
+          setTelegramCommunitySave(null)
+        }}
+        telegramCommunitySave={telegramCommunitySave}
+        onSaveTelegramCommunity={saveTelegramCommunityLink}
         providerAlignment={activeProviderAlignment}
         onUploadCsv={uploadCsv}
         onImportHistory={importRealHistory}

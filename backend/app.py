@@ -35,6 +35,7 @@ from engine.strategy_governance import CHALLENGER_VERSION, StrategyGovernance
 from engine.execution_reality import ExecutionRealityEngine, FeedReconciliationEngine
 from engine.decision_quality import DecisionQualityEngine
 from engine.market_regime import MarketRegimeEngine
+from engine.human_verification import HumanVerificationService, RequestAbuseGuard
 from engine.signal_alerts import ClosedCandleAlerts
 from engine.telegram_alerts import TelegramDiamondAlerts
 from engine.xau_confluence import XAUPrecisionConfluenceEngine
@@ -87,8 +88,8 @@ from engine.xauusd_provider import (
     normalize_timeframe,
 )
 
-APP_VERSION = "3.8.5"
-APP_VERSION_LABEL = "V3.8.5"
+APP_VERSION = "3.8.6"
+APP_VERSION_LABEL = "V3.8.6"
 APP_DESCRIPTION = "Diamond Discovery Trading OS"
 logger = logging.getLogger("sh_market_analyzer")
 MARKET_VISUAL_SYMBOLS = {
@@ -126,10 +127,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 auth_guard = SupabaseAuthGuard()
+human_verification = HumanVerificationService()
+request_abuse_guard = RequestAbuseGuard()
 
 
 @app.middleware("http")
 async def require_authenticated_api(request: Request, call_next):
+    client_host = request.client.host if request.client else None
+    client_key = request_abuse_guard.client_key(request.headers, client_host)
+    rate = request_abuse_guard.check(client_key, request.url.path)
+    if not rate["allowed"]:
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(rate["retry_after"])},
+            content={"error": "Too many requests. Please wait and try again.", "code": "RATE_LIMITED"},
+        )
     if not auth_guard.protects(request.method, request.url.path):
         return await call_next(request)
     try:
@@ -142,7 +154,6 @@ async def require_authenticated_api(request: Request, call_next):
             status_code=exc.status_code,
             content={"error": exc.message, "code": exc.code},
         )
-    client_host = request.client.host if request.client else None
     local_owner_allowed = auth_guard.permits_local_owner(client_host)
     if (
         auth_guard.requires_admin(request.url.path)
@@ -305,11 +316,20 @@ class TelegramAlertSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
 
 
+class TelegramCommunityPayload(BaseModel):
+    url: str = ""
+
+
 class ClientErrorPayload(BaseModel):
     scope: str = "unknown"
     message: str = "Unknown client error"
     build_id: str = "unknown"
     path: str = "/"
+
+
+class TurnstileVerificationPayload(BaseModel):
+    token: str
+    action: str = "account_access"
 
 
 _client_error_lock = threading.Lock()
@@ -456,6 +476,21 @@ def record_client_error(payload: ClientErrorPayload, request: Request):
     return {"status": "RECORDED"}
 
 
+@app.post("/api/security/turnstile/verify")
+def verify_turnstile(payload: TurnstileVerificationPayload, request: Request):
+    client_host = request_abuse_guard.client_key(
+        request.headers,
+        request.client.host if request.client else None,
+    )
+    result = human_verification.verify(payload.token, client_host, payload.action)
+    if not result.get("success"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Security verification failed. Please try again.", "code": result.get("reason")},
+        )
+    return {"status": "VERIFIED", "configured": result.get("configured") is True}
+
+
 @app.get("/api/health")
 def api_health():
     info = candle_store.database_info()
@@ -488,6 +523,7 @@ def api_health():
             "diamond_history_persistent": PERSISTENT_STORAGE_ENABLED,
         },
         "authentication": auth_guard.status(),
+        "human_verification": human_verification.status(),
         "market_feed": {
             "active_provider": "OANDA",
             "visual_symbol": _market_visual_symbol("XAUUSD"),
@@ -2040,6 +2076,27 @@ def test_telegram_alert(payload: TelegramAlertSettingsPayload):
     return result | {"telegram": saved}
 
 
+@app.get("/api/community/telegram")
+def telegram_community_link():
+    return {"ok": True, "community": settings.telegram_community_status()}
+
+
+@app.post("/api/admin/community/telegram")
+def save_telegram_community_link(payload: TelegramCommunityPayload):
+    try:
+        community = settings.save_telegram_community_url(payload.url)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "code": "INVALID_TELEGRAM_LINK", "message": str(exc)},
+        )
+    return {
+        "ok": True,
+        "community": community,
+        "message": "Telegram Community link saved." if community["configured"] else "Telegram Community link removed.",
+    }
+
+
 @app.post("/api/market/alerts/{alert_id}/acknowledge")
 def acknowledge_market_alert(alert_id: int):
     try:
@@ -3281,6 +3338,14 @@ def _market_key_zones(
         zone_timeframe: timeframe_payload(zone_timeframe).get("candles") or []
         for zone_timeframe in fusion_timeframes
     }
+    fusion_primary = result.get("primary_zone") or {}
+    fusion_regime = market_regime_engine.evaluate(
+        normalized,
+        fusion_profile["execution_timeframe"],
+        fusion_frames.get(fusion_profile["execution_timeframe"]) or [],
+        fusion_primary.get("entry_side"),
+    )
+    analysis_context["market_regime"] = fusion_regime
     fusion_model = diamond_timeframe_engine.evaluate(
         normalized,
         style,
@@ -3290,6 +3355,7 @@ def _market_key_zones(
         session or {},
         smr_model,
         smt_model,
+        fusion_regime,
     )
     fusion_sources = {
         zone_timeframe: timeframe_payload(zone_timeframe).get("data_integrity", {}).get("chart_source")
@@ -3337,6 +3403,9 @@ def _apply_diamond_zone_context(result: Dict[str, Any]) -> None:
     signal["diamond_trading_style"] = key_zones.get("trading_style")
     signal["diamond_execution_timeframe"] = key_zones.get("execution_timeframe")
     signal["diamond_confirmation_timeframe"] = key_zones.get("confirmation_timeframe")
+    signal["diamond_confidence_label"] = key_zones.get("confidence_label")
+    signal["diamond_public_lifecycle"] = key_zones.get("public_lifecycle")
+    signal["diamond_regime_validation"] = key_zones.get("regime_validation")
     if key_zones.get("status") != "READY":
         signal["diamond_zone_aligned"] = None
         return

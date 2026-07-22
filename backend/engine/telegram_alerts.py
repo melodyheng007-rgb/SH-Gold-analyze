@@ -293,6 +293,7 @@ class TelegramDiamondAlerts:
             "model": event.get("origin_model") or event.get("entry_pathway") or (zones.get("precision_gate") or {}).get("origin_model"),
             "regime": regime.get("regime"),
             "regime_direction": regime.get("regime_direction"),
+            "confidence_label": zones.get("confidence_label"),
         }
 
     @staticmethod
@@ -316,12 +317,14 @@ class TelegramDiamondAlerts:
             "RANGING": "ទីផ្សារក្នុងចន្លោះ",
             "WAITING": "កំពុងរង់ចាំទិន្នន័យ",
         }.get(raw_regime, raw_regime.replace("_", " ").title()))
+        confidence = html.escape(str(context.get("confidence_label") or "Setup Confirmed"))
         return (
             "<b>SH DIAMOND ENTRY ថ្មី</b>\n"
             f"<b>{symbol} | {timeframe} | {style}</b>\n\n"
             f"ទិសដៅ៖ <b>{side}</b>\n"
             f"កម្រិត៖ <b>{grade}</b> ({score}%)\n"
             f"តំបន់ Entry៖ <b>{zone_text}</b>\n"
+            f"ស្ថានភាព៖ {confidence}\n"
             f"Strategy៖ {model}\n"
             f"ស្ថានភាពទីផ្សារ៖ {regime}\n\n"
             "<b>Engine បានបញ្ជាក់ Entry Zone ថ្មី។</b>\n"

@@ -53,7 +53,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertIn(result["primary_zone"]["lifecycle"], {"FRESH", "TESTED"})
         self.assertIn(result["quality_grade"], {"A+", "A", "B", "C"})
         self.assertEqual(result["confirmation_state"], "CONFIRMED_HOLD")
-        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V8_5_ADAPTIVE_SMT")
+        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V8_6_REGIME_ADAPTIVE")
         self.assertEqual(result["profile"], "XAU_ADAPTIVE_PRECISION_V7_5M")
         self.assertEqual(result["adaptive_profile"]["asset_model"], "XAU_PRECISION")
         self.assertTrue(result["adaptive_profile"]["quality_floor_preserved"])

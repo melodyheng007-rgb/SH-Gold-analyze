@@ -1,0 +1,729 @@
+/*
+ * SH Market Analyzer - reversible Modern 2026 workspace layer.
+ * Remove this import from main.jsx to restore the V3.8.6 visual layer.
+ */
+
+:root {
+  --modern-bg: #080a0d;
+  --modern-surface: #0d1014;
+  --modern-surface-2: #11161d;
+  --modern-panel: #091321;
+  --modern-border: #29313c;
+  --modern-border-soft: #202833;
+  --modern-text: #f1f4f7;
+  --modern-muted: #828e9d;
+  --modern-gold: #ffd451;
+  --modern-cyan: #39d5ff;
+  --modern-orange: #ff8748;
+  --modern-green: #45e284;
+  --modern-red: #ff6678;
+}
+
+.modern-ui-2026 {
+  min-height: 100dvh;
+  padding: 8px 10px 14px;
+  color: var(--modern-text);
+  background: var(--modern-bg);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+.modern-ui-2026 button,
+.modern-ui-2026 select {
+  outline-offset: 2px;
+}
+
+.modern-ui-2026 button:focus-visible,
+.modern-ui-2026 select:focus-visible {
+  outline: 2px solid var(--modern-cyan);
+}
+
+/* Compact command bar */
+.modern-ui-2026 .top-toolbar {
+  grid-template-columns: minmax(178px, .72fr) auto auto;
+  gap: 10px;
+  min-height: 66px;
+  padding: 8px 10px;
+  border-color: #333b47;
+  border-radius: 7px;
+  background: rgba(13, 16, 20, .98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .24), inset 0 2px #202a34;
+  backdrop-filter: blur(10px);
+}
+
+.modern-ui-2026 .symbol-badge { gap: 2px; }
+.modern-ui-2026 .symbol-badge span { color: #778391; font-size: 8px; }
+.modern-ui-2026 .symbol-badge strong { font-size: 20px; }
+.modern-ui-2026 .symbol-badge em { color: #9aa3ae; font-size: 10px; }
+.modern-ui-2026 .symbol-badge p { color: var(--modern-gold); font-size: 11px; }
+
+.modern-ui-2026 .toolbar-controls { gap: 7px; }
+.modern-ui-2026 .top-toolbar.signal-mode .toolbar-controls {
+  grid-template-columns: minmax(210px, 242px) minmax(164px, 186px);
+}
+.modern-ui-2026 .asset-control,
+.modern-ui-2026 .position-control { gap: 3px; }
+.modern-ui-2026 .asset-control > span,
+.modern-ui-2026 .position-control > span { color: #6f7a88; font-size: 8px; }
+.modern-ui-2026 .asset-segmented,
+.modern-ui-2026 .position-segmented {
+  gap: 2px;
+  padding: 2px;
+  border-color: #2a3039;
+  border-radius: 6px;
+  background: #080b0f;
+}
+.modern-ui-2026 .asset-segmented button,
+.modern-ui-2026 .position-segmented button {
+  min-height: 35px;
+  border-radius: 4px;
+}
+.modern-ui-2026 .asset-segmented button.active {
+  color: #e9faff;
+  border-color: #31829a;
+  background: #132a35;
+  box-shadow: none;
+}
+.modern-ui-2026 .position-segmented button.active {
+  color: #ffe176;
+  border-color: #756321;
+  background: #302a0d;
+}
+
+.modern-ui-2026 .toolbar-actions { gap: 6px; }
+.modern-ui-2026 .toolbar-actions button,
+.modern-ui-2026 .auto-engine-status,
+.modern-ui-2026 .account-control {
+  min-height: 40px;
+  border-color: #303741;
+  border-radius: 6px;
+  background: #14181e;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .025);
+}
+.modern-ui-2026 .toolbar-actions button {
+  min-width: 0;
+  padding: 7px 10px;
+}
+.modern-ui-2026 .toolbar-actions .view-action { min-width: 104px; }
+.modern-ui-2026 .toolbar-actions .weekly-news-action { min-width: 66px; }
+.modern-ui-2026 .toolbar-actions .settings-action { min-width: 92px; }
+.modern-ui-2026 .auto-engine-status {
+  min-width: 138px;
+  background: #0f151c;
+}
+.modern-ui-2026 .auto-engine-status.watching { background: #0c1820; }
+.modern-ui-2026 .auto-engine-status.scanning { background: #1b180d; }
+.modern-ui-2026 .auto-engine-status.armed { background: #0c1a13; }
+.modern-ui-2026 .auto-engine-status.locked,
+.modern-ui-2026 .auto-engine-status.offline { background: #1c1014; }
+.modern-ui-2026 .account-control { min-width: 122px; }
+
+/* Notifications become a quiet status line instead of a content block. */
+.modern-ui-2026 .app-notice {
+  min-height: 34px;
+  margin: 6px 0;
+  padding: 5px 9px;
+  border-width: 1px 1px 1px 2px;
+  border-radius: 5px;
+  box-shadow: none;
+}
+.modern-ui-2026 .app-notice strong { font-size: 8px; }
+.modern-ui-2026 .app-notice span { font-size: 9px; }
+
+/* Chart workspace */
+.modern-ui-2026 .signal-view {
+  margin-top: 6px;
+  border-color: #344657;
+  border-radius: 7px;
+  background: var(--modern-panel);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .2);
+}
+.modern-ui-2026 .signal-view-toolbar {
+  grid-template-columns: minmax(150px, 1fr) auto auto auto auto;
+  gap: 7px;
+  min-height: 44px;
+  padding: 4px 7px;
+  color: #edf5fc;
+  border-bottom-color: #304152;
+  background: #111922;
+}
+.modern-ui-2026 .signal-view-symbol strong { color: #f7fafc; font-size: 13px; }
+.modern-ui-2026 .signal-view-symbol span { color: #8fa1b4; font-size: 8px; }
+.modern-ui-2026 .signal-live-state { min-width: 86px; color: #aeb9c5; font-size: 8px; }
+.modern-ui-2026 .signal-live-state.forming { color: var(--modern-green); }
+.modern-ui-2026 .signal-live-state time { color: #7f90a2; }
+.modern-ui-2026 .signal-live-state em { color: var(--modern-green); }
+.modern-ui-2026 .signal-live-state i { background: #68798b; }
+.modern-ui-2026 .signal-live-state.forming i { background: var(--modern-green); }
+.modern-ui-2026 .signal-live-state b { border-radius: 3px; font-size: 7px; }
+.modern-ui-2026 .signal-live-state b.verified { color: #66eca0; background: #123321; }
+.modern-ui-2026 .signal-crystal-guide {
+  min-height: 28px;
+  gap: 5px;
+  border-color: #344657;
+  border-radius: 4px;
+  color: #94a6b9;
+  background: #0b121a;
+  font-size: 7px;
+}
+.modern-ui-2026 .signal-crystal-guide .buy { color: var(--modern-cyan); }
+.modern-ui-2026 .signal-crystal-guide .sell { color: var(--modern-orange); }
+.modern-ui-2026 .signal-crystal-guide b { color: #e7eef5; border-left-color: #344657; }
+.modern-ui-2026 .signal-crystal-guide em { color: #8091a3; }
+.modern-ui-2026 .signal-view-timeframes { gap: 3px; }
+.modern-ui-2026 .signal-view-timeframes button {
+  width: 43px;
+  min-width: 43px;
+  min-height: 31px;
+  color: #bdc8d4;
+  border-color: #2c3947;
+  border-radius: 4px;
+  background: #19232e;
+  font-size: 10px;
+}
+.modern-ui-2026 .signal-view-timeframes button.active {
+  color: #12150e;
+  border-color: var(--modern-gold);
+  background: var(--modern-gold);
+}
+.modern-ui-2026 .signal-view-tv {
+  min-width: 108px;
+  min-height: 31px;
+  color: #eaf2f8;
+  border-color: #3a4b5c;
+  border-radius: 4px;
+  background: #17212b;
+  font-size: 10px;
+}
+.modern-ui-2026 .signal-feed-warning {
+  min-height: 24px;
+  padding-block: 3px;
+  font-size: 9px;
+}
+
+.modern-ui-2026 .diamond-status-bar {
+  grid-template-columns: minmax(230px, 1.3fr) 136px minmax(250px, 1fr) 146px;
+  min-height: 50px;
+  border-bottom-color: #2e3a49;
+  background: #0a1726;
+  box-shadow: inset 3px 0 var(--modern-gold);
+}
+.modern-ui-2026 .diamond-status-bar > div {
+  padding: 5px 9px;
+  border-right-color: #223043;
+}
+.modern-ui-2026 .diamond-status-decision > strong { font-size: 11px; }
+.modern-ui-2026 .diamond-status-decision > span { color: var(--modern-cyan); }
+.modern-ui-2026 .diamond-status-decision > strong { color: #ffe06b; }
+.modern-ui-2026 .diamond-status-signal span { min-width: 42px; }
+.modern-ui-2026 .diamond-status-signal span.buy { color: var(--modern-cyan); border-color: #2a91ad; background: #0d2631; }
+.modern-ui-2026 .diamond-status-signal span.sell { color: var(--modern-orange); border-color: #a95e35; background: #2a1811; }
+.modern-ui-2026 .diamond-status-actions button {
+  min-height: 31px;
+  border-radius: 4px;
+  background: #111d2b;
+}
+
+.modern-ui-2026 .signal-chart-shell {
+  height: clamp(520px, calc(100dvh - 246px), 820px);
+  background: #061321;
+}
+.modern-ui-2026 .signal-chart-shell.empty {
+  height: clamp(360px, calc(100dvh - 300px), 620px);
+}
+.modern-ui-2026 .signal-chart-brand {
+  top: 11px;
+  grid-template-columns: 30px auto 44px;
+  gap: 6px;
+  opacity: .42;
+}
+.modern-ui-2026 .signal-chart-brand-mark { width: 30px; height: 24px; }
+.modern-ui-2026 .signal-chart-brand-copy strong { gap: 4px; font-size: 19px; }
+.modern-ui-2026 .signal-chart-brand-copy small { font-size: 6px; }
+.modern-ui-2026 .signal-chart-brand > i { opacity: .55; }
+
+/* Intelligence stays available without competing with the chart. */
+.modern-ui-2026 .intelligence-dock {
+  border-top-color: #2c3745;
+  background: #090f17;
+}
+.modern-ui-2026 .intelligence-dock-head {
+  grid-template-columns: 168px minmax(0, 1fr) 40px;
+  min-height: 41px;
+  background: #0c121a;
+}
+.modern-ui-2026 .intelligence-dock-head > div { padding: 5px 9px; }
+.modern-ui-2026 .intelligence-dock-head > div span { font-size: 7px; }
+.modern-ui-2026 .intelligence-dock-head > div strong { font-size: 11px; }
+.modern-ui-2026 .intelligence-dock-head nav button {
+  min-width: 118px;
+  padding-inline: 11px;
+  font-size: 9px;
+}
+.modern-ui-2026 .intelligence-dock-head .dock-collapse {
+  width: 40px;
+  min-width: 40px;
+}
+.modern-ui-2026 .bottom-status {
+  min-height: 34px;
+  margin-top: 6px;
+  border-color: #252c35;
+  border-radius: 5px;
+  background: #0d1014;
+}
+
+/* Account is a compact utility sheet, not a full-height warning panel. */
+.modern-ui-2026 .account-focus-panel {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(390px, 100%);
+  background: #0c131c;
+}
+.modern-ui-2026 .account-focus-identity {
+  padding: 15px 14px;
+  border-bottom-color: #273544;
+  background: #0f1823;
+}
+.modern-ui-2026 .account-focus-identity > i {
+  color: #84e8ff;
+  border-color: #3789a0;
+  background: #102b36;
+}
+.modern-ui-2026 .account-focus-content {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.modern-ui-2026 .account-focus-status {
+  margin: 0;
+  padding: 11px;
+  border-color: #2c4650;
+  background: #0d1b22;
+}
+.modern-ui-2026 .account-focus-status svg { color: var(--modern-green); }
+.modern-ui-2026 .account-community-link {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 20px;
+  gap: 10px;
+  align-items: center;
+  min-height: 74px;
+  padding: 11px;
+  color: #effaff;
+  border: 1px solid #2b8da9;
+  border-radius: 6px;
+  background: #0d2631;
+  text-decoration: none;
+  box-shadow: inset 3px 0 var(--modern-cyan);
+}
+.modern-ui-2026 .account-community-link > i {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: #05141a;
+  border-radius: 50%;
+  background: var(--modern-cyan);
+}
+.modern-ui-2026 .account-community-link > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.modern-ui-2026 .account-community-link strong { color: #f4fbff; font-size: 11px; }
+.modern-ui-2026 .account-community-link small { color: #9bb5c2; font-size: 8px; line-height: 1.35; }
+.modern-ui-2026 .account-community-link > svg { color: var(--modern-cyan); }
+.modern-ui-2026 .account-community-link:hover { border-color: #5bdfff; background: #12313d; }
+.modern-ui-2026 .account-community-link.unavailable {
+  cursor: default;
+  opacity: .62;
+  border-color: #35424d;
+  background: #121921;
+  box-shadow: inset 3px 0 #4f5b67;
+}
+.modern-ui-2026 .account-community-link.unavailable > i { color: #d1d8df; background: #46525e; }
+.modern-ui-2026 .account-community-link.unavailable > svg { color: #667381; }
+.modern-ui-2026 .account-focus-signout {
+  width: 100%;
+  min-height: 40px;
+  margin: auto 0 0;
+  color: #ff8e9b;
+  border-color: #5e303a;
+  border-radius: 5px;
+  background: #211218;
+}
+.modern-ui-2026 .account-focus-signout:hover { color: #ffd7dc; border-color: #8b3d4c; background: #2b151c; }
+
+.modern-ui-2026 .telegram-community-admin {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #25485a;
+  border-radius: 6px;
+  background: #0b171e;
+  box-shadow: inset 3px 0 var(--modern-cyan);
+}
+.modern-ui-2026 .telegram-community-admin-head {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+.modern-ui-2026 .telegram-community-admin-head > i {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #061218;
+  border-radius: 50%;
+  background: var(--modern-cyan);
+}
+.modern-ui-2026 .telegram-community-admin-head > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.modern-ui-2026 .telegram-community-admin-head strong { color: #f3faff; font-size: 11px; }
+.modern-ui-2026 .telegram-community-admin-head small { color: #89a4b2; font-size: 8px; }
+.modern-ui-2026 .telegram-community-admin-head > b {
+  padding: 4px 6px;
+  color: #ffce5a;
+  border: 1px solid #66541e;
+  border-radius: 4px;
+  font-size: 7px;
+  background: #201b0d;
+}
+.modern-ui-2026 .telegram-community-admin-head > b.good {
+  color: #54e4a1;
+  border-color: #236b50;
+  background: #0d271f;
+}
+.modern-ui-2026 .telegram-community-admin input {
+  border-color: #314b58;
+  background: #081117;
+}
+.modern-ui-2026 .telegram-community-admin input:focus {
+  border-color: var(--modern-cyan);
+  box-shadow: 0 0 0 2px rgba(55, 207, 243, .12);
+}
+.modern-ui-2026 .telegram-community-admin-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.modern-ui-2026 .telegram-community-admin-actions > a {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: #91dff3;
+  border: 1px solid #315565;
+  border-radius: 5px;
+  font-size: 9px;
+  text-decoration: none;
+}
+.modern-ui-2026 .telegram-community-admin-actions > a:hover { color: #eafaff; border-color: var(--modern-cyan); }
+.modern-ui-2026 .telegram-community-admin-actions .provider-save-button { width: auto; min-width: 156px; }
+
+/* Laptops and tablets keep all controls without squeezing the chart. */
+@media (max-width: 1320px) and (min-width: 721px) {
+  .modern-ui-2026 .top-toolbar {
+    grid-template-columns: minmax(140px, .6fr) auto auto;
+    gap: 7px;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .toolbar-controls {
+    grid-template-columns: 190px 154px;
+  }
+  .modern-ui-2026 .asset-control > span,
+  .modern-ui-2026 .position-control > span { display: none; }
+  .modern-ui-2026 .toolbar-actions .view-action,
+  .modern-ui-2026 .toolbar-actions .weekly-news-action,
+  .modern-ui-2026 .toolbar-actions .settings-action {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+  }
+  .modern-ui-2026 .toolbar-actions .view-action span,
+  .modern-ui-2026 .toolbar-actions .weekly-news-action span,
+  .modern-ui-2026 .toolbar-actions .settings-action span { display: none; }
+  .modern-ui-2026 .auto-engine-status { min-width: 126px; }
+  .modern-ui-2026 .account-control { min-width: 42px; padding: 5px 7px; }
+  .modern-ui-2026 .account-control > span,
+  .modern-ui-2026 .account-control > button { display: none; }
+  .modern-ui-2026 .signal-crystal-guide em { display: none; }
+  .modern-ui-2026 .diamond-status-bar {
+    grid-template-columns: minmax(210px, 1fr) 126px minmax(210px, 1fr) 132px;
+  }
+}
+
+/* Mobile is chart-first: two command rows, one compact status row. */
+@media (max-width: 720px) {
+  .modern-ui-2026 {
+    padding: 0 0 calc(53px + env(safe-area-inset-bottom));
+    background: #07090c;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode {
+    grid-template-columns: minmax(94px, .72fr) minmax(0, 1.7fr);
+    grid-template-rows: auto auto;
+    gap: 5px 7px;
+    min-height: 0;
+    padding: 6px 7px;
+    border-width: 0 0 1px;
+    border-radius: 0;
+    box-shadow: 0 5px 18px rgba(0, 0, 0, .28);
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .symbol-badge {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 36px;
+    align-content: center;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .symbol-badge span { font-size: 6px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .symbol-badge strong { font-size: 15px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .symbol-badge em { font-size: 8px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .symbol-badge p { font-size: 9px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .toolbar-controls {
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .asset-control > span,
+  .modern-ui-2026 .top-toolbar.signal-mode .position-control > span { display: none; }
+  .modern-ui-2026 .top-toolbar.signal-mode .asset-segmented,
+  .modern-ui-2026 .top-toolbar.signal-mode .position-segmented { padding: 2px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .asset-segmented button,
+  .modern-ui-2026 .top-toolbar.signal-mode .position-segmented button {
+    min-height: 34px;
+    padding: 3px 5px;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .asset-segmented small,
+  .modern-ui-2026 .top-toolbar.signal-mode .position-segmented small { display: none; }
+  .modern-ui-2026 .top-toolbar.signal-mode .asset-segmented strong,
+  .modern-ui-2026 .top-toolbar.signal-mode .position-segmented strong { font-size: 9px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .toolbar-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: 38px 38px minmax(104px, 1fr) 38px 38px;
+    gap: 5px;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .toolbar-actions button,
+  .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status,
+  .modern-ui-2026 .top-toolbar.signal-mode .account-control {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding: 4px;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .view-action span,
+  .modern-ui-2026 .top-toolbar.signal-mode .weekly-news-action span,
+  .modern-ui-2026 .top-toolbar.signal-mode .settings-action span,
+  .modern-ui-2026 .top-toolbar.signal-mode .account-control > span,
+  .modern-ui-2026 .top-toolbar.signal-mode .account-control > button { display: none !important; }
+  .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status { gap: 5px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status small { display: none; }
+  .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status strong { font-size: 9px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .account-control { justify-content: center; }
+  .modern-ui-2026 .top-toolbar.signal-mode .account-control > i {
+    width: 25px;
+    height: 25px;
+    flex-basis: 25px;
+  }
+
+  .modern-ui-2026 .app-notice {
+    min-height: 27px;
+    max-height: 27px;
+    margin: 4px 5px;
+    padding: 3px 6px;
+  }
+  .modern-ui-2026 .app-notice strong { font-size: 7px; }
+  .modern-ui-2026 .app-notice span { font-size: 7px; }
+  .modern-ui-2026 .app-notice em { display: none; }
+
+  .modern-ui-2026 .signal-view {
+    margin-top: 4px;
+    border-width: 1px 0 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .modern-ui-2026 .signal-view-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto 36px;
+    grid-template-rows: 28px 36px;
+    gap: 3px 5px;
+    min-height: 72px;
+    padding: 3px 5px 4px;
+  }
+  .modern-ui-2026 .signal-view-symbol {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .modern-ui-2026 .signal-view-symbol strong { font-size: 11px; }
+  .modern-ui-2026 .signal-view-symbol span { font-size: 6px; }
+  .modern-ui-2026 .signal-live-state {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    gap: 3px;
+    font-size: 7px;
+  }
+  .modern-ui-2026 .signal-live-state time,
+  .modern-ui-2026 .signal-live-state b { display: none; }
+  .modern-ui-2026 .signal-live-state em { font-size: 6px; }
+  .modern-ui-2026 .signal-crystal-guide { display: none; }
+  .modern-ui-2026 .signal-view-timeframes {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .modern-ui-2026 .signal-view-timeframes button {
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    font-size: 9px;
+  }
+  .modern-ui-2026 .signal-view-tv {
+    grid-column: 3;
+    grid-row: 1;
+    width: 36px;
+    min-width: 36px;
+    min-height: 28px;
+    padding: 0;
+  }
+  .modern-ui-2026 .signal-view-tv span { display: none; }
+  .modern-ui-2026 .signal-feed-warning {
+    min-height: 23px;
+    padding: 3px 6px;
+    font-size: 7px;
+  }
+  .modern-ui-2026 .signal-feed-warning strong { font-size: 7px; }
+
+  .modern-ui-2026 .diamond-status-bar {
+    grid-template-columns: minmax(0, 1fr) 68px 66px;
+    min-height: 40px;
+    max-height: 40px;
+  }
+  .modern-ui-2026 .diamond-status-decision { padding: 3px 6px !important; }
+  .modern-ui-2026 .diamond-status-decision > span { font-size: 6px; }
+  .modern-ui-2026 .diamond-status-decision > strong { font-size: 8px; }
+  .modern-ui-2026 .diamond-status-next { display: none; }
+  .modern-ui-2026 .diamond-status-signal { padding: 4px !important; }
+  .modern-ui-2026 .diamond-status-signal span { min-width: 30px; font-size: 6px; }
+  .modern-ui-2026 .diamond-status-signal strong { font-size: 7px; }
+  .modern-ui-2026 .diamond-status-signal b { font-size: 6px; }
+  .modern-ui-2026 .diamond-status-actions {
+    grid-template-columns: repeat(2, 27px);
+    gap: 3px;
+    padding: 5px 3px !important;
+  }
+  .modern-ui-2026 .diamond-status-actions button {
+    min-width: 27px;
+    min-height: 27px;
+    padding: 0;
+  }
+  .modern-ui-2026 .diamond-status-actions button span { display: none; }
+  .modern-ui-2026 .diamond-status-context { display: none; }
+
+  .modern-ui-2026 .signal-chart-shell,
+  .modern-ui-2026 .signal-chart-shell.empty {
+    height: clamp(500px, calc(100dvh - 244px), 720px);
+  }
+  .modern-ui-2026 .signal-chart-brand {
+    top: 7px;
+    grid-template-columns: 24px auto 28px;
+    gap: 4px;
+    opacity: .35;
+  }
+  .modern-ui-2026 .signal-chart-brand-mark { width: 24px; height: 20px; }
+  .modern-ui-2026 .signal-chart-brand-copy strong { font-size: 14px; }
+  .modern-ui-2026 .signal-chart-brand-copy small { display: none; }
+  .modern-ui-2026 .signal-news-chip { top: 4px; right: 4px; }
+
+  .modern-ui-2026 .intelligence-dock-head {
+    grid-template-columns: 104px minmax(0, 1fr) 38px;
+    min-height: 39px;
+  }
+  .modern-ui-2026 .intelligence-dock-head > div { padding: 4px 6px; }
+  .modern-ui-2026 .intelligence-dock-head > div span { font-size: 6px; }
+  .modern-ui-2026 .intelligence-dock-head > div strong { font-size: 9px; }
+  .modern-ui-2026 .intelligence-dock-head nav { overflow-x: auto; }
+  .modern-ui-2026 .intelligence-dock-head nav button {
+    min-width: 82px;
+    padding-inline: 6px;
+    font-size: 7px;
+  }
+  .modern-ui-2026 .intelligence-dock-head nav button b { display: none; }
+  .modern-ui-2026 .intelligence-dock-head .dock-collapse {
+    width: 38px;
+    min-width: 38px;
+  }
+  .modern-ui-2026 .intelligence-dock:not(.collapsed) {
+    inset: auto 4px calc(51px + env(safe-area-inset-bottom));
+    max-height: min(76dvh, 680px);
+    border-radius: 7px 7px 0 0;
+  }
+  .modern-ui-2026 .bottom-status { display: none; }
+
+  .modern-ui-2026 .mobile-focus-nav {
+    min-height: calc(49px + env(safe-area-inset-bottom));
+    padding: 2px 4px env(safe-area-inset-bottom);
+    border-top-color: #2a323d;
+    background: rgba(9, 12, 16, .97);
+    box-shadow: 0 -6px 20px rgba(0, 0, 0, .3);
+    backdrop-filter: blur(12px);
+  }
+  .modern-ui-2026 .mobile-focus-nav button {
+    min-height: 44px;
+    border-radius: 5px;
+  }
+  .modern-ui-2026 .mobile-focus-nav button.active {
+    color: var(--modern-gold);
+    background: #1c1a10;
+  }
+  .modern-ui-2026 .mobile-focus-nav button span { font-size: 6px; }
+  .modern-ui-2026 .focus-panel {
+    height: min(82dvh, 720px);
+    border-radius: 7px 7px 0 0;
+  }
+  .modern-ui-2026 .account-focus-panel {
+    width: calc(100% - 10px);
+    height: auto;
+    max-height: min(68dvh, 520px);
+    margin: 0 5px;
+    border: 1px solid #344352;
+  }
+  .modern-ui-2026 .account-focus-content { min-height: 210px; }
+  .modern-ui-2026 .telegram-community-admin-actions {
+    display: grid;
+    grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+  }
+  .modern-ui-2026 .telegram-community-admin-actions > a,
+  .modern-ui-2026 .telegram-community-admin-actions .provider-save-button {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 390px) {
+  .modern-ui-2026 .top-toolbar.signal-mode {
+    grid-template-columns: 90px minmax(0, 1fr);
+    padding-inline: 5px;
+  }
+  .modern-ui-2026 .top-toolbar.signal-mode .toolbar-actions {
+    grid-template-columns: 36px 36px minmax(92px, 1fr) 36px 36px;
+    gap: 4px;
+  }
+  .modern-ui-2026 .signal-live-state em { display: none; }
+  .modern-ui-2026 .diamond-status-bar { grid-template-columns: minmax(0, 1fr) 64px 62px; }
+  .modern-ui-2026 .signal-chart-shell,
+  .modern-ui-2026 .signal-chart-shell.empty { min-height: 500px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modern-ui-2026 .top-toolbar,
+  .modern-ui-2026 .signal-chart-canvas,
+  .modern-ui-2026 .intelligence-dock-reveal { transition: none; }
+}

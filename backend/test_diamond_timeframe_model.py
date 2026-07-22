@@ -214,6 +214,46 @@ class DiamondTimeframeFusionTests(unittest.TestCase):
         self.assertEqual(empty["zones"], [])
         self.assertIsNone(empty["primary_zone"])
 
+    def test_strong_market_regime_vetoes_counter_trend_diamond(self) -> None:
+        frames = {
+            "5M": trend_candles(100, 0.22, 300),
+            "15M": trend_candles(100, 0.45, 900),
+            "1H": trend_candles(100, 0.9, 3600),
+        }
+        zones = aligned_zone(frames)
+        zones["primary_zone"]["entry_side"] = "SELL"
+        model = self.engine.evaluate(
+            "XAUUSD",
+            "SCALPING",
+            frames,
+            zones,
+            {"news_intelligence": {"execution_gate": "OPEN"}},
+            {"position": "LONDON"},
+            confirmed_smr(),
+            {},
+            {
+                "regime": "TRENDING_BULLISH",
+                "regime_direction": "BUY",
+                "strength": 84,
+                "strength_band": "STRONG",
+                "pullback_state": "PULLBACK_READY",
+            },
+        )
+
+        self.assertEqual(model["execution_gate"], "BLOCK_CONFLICT")
+        self.assertIn("STRONG_REGIME_CONFLICT", model["hard_conflicts"])
+        self.assertEqual(model["confidence_label"], "Counter-Trend Risk")
+        self.assertEqual(model["lifecycle"], "WATCHING")
+
+    def test_public_lifecycle_is_ready_only_after_confirmed_entry(self) -> None:
+        zones = {
+            "primary_zone": {"lifecycle": "FRESH"},
+            "latest_entry_event": {"id": "entry-1"},
+        }
+
+        self.assertEqual(self.engine._public_lifecycle(zones, "CONFIRMED"), "READY")
+        self.assertEqual(self.engine._public_lifecycle(zones, "WATCH"), "WATCHING")
+
 
 if __name__ == "__main__":
     unittest.main()

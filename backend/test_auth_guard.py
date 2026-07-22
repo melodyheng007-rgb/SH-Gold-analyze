@@ -40,6 +40,8 @@ class SupabaseAuthGuardTests(unittest.TestCase):
         guard = self.make_guard()
         self.assertTrue(guard.requires_admin("/api/xauusd/provider-settings"))
         self.assertTrue(guard.requires_admin("/api/xauusd/reset-database"))
+        self.assertTrue(guard.requires_admin("/api/admin/community/telegram"))
+        self.assertFalse(guard.requires_admin("/api/community/telegram"))
         self.assertFalse(guard.requires_admin("/api/market/chart-live"))
 
     def test_local_owner_mode_only_allows_loopback_clients(self):
