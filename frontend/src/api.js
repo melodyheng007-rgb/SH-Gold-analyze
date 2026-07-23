@@ -357,8 +357,11 @@ export async function getMarketChartLive(symbol = 'XAUUSD', timeframe = '15M', l
   return await apiRequest('/api/market/chart-live', { query: { symbol, timeframe, limit, trade_style: tradeStyle }, timeoutMs: 25000 })
 }
 
-export async function getMarketCandleTick(symbol = 'XAUUSD', timeframe = '15M', tradeStyle = 'SCALPING') {
-  return await apiRequest('/api/market/candle-tick', { query: { symbol, timeframe, trade_style: tradeStyle }, timeoutMs: 10000 })
+export async function getMarketCandleTick(symbol = 'XAUUSD', timeframe = '15M', tradeStyle = 'SCALPING', analysisRevision = '') {
+  return await apiRequest('/api/market/candle-tick', {
+    query: { symbol, timeframe, trade_style: tradeStyle, analysis_revision: analysisRevision },
+    timeoutMs: 10000,
+  })
 }
 
 export async function getMarketMtfSnapshot(symbol = 'XAUUSD') {

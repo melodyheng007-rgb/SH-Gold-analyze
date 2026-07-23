@@ -38,6 +38,7 @@ from engine.market_regime import MarketRegimeEngine
 from engine.human_verification import HumanVerificationService, RequestAbuseGuard
 from engine.signal_alerts import ClosedCandleAlerts
 from engine.telegram_alerts import TelegramDiamondAlerts
+from engine.live_analysis_delivery import build_analysis_revision, should_deliver_analysis
 from engine.xau_confluence import XAUPrecisionConfluenceEngine
 from engine.data_integrity import DataIntegrityEngine
 from engine.data_loader import candles_to_records
@@ -1713,6 +1714,7 @@ def market_candle_tick(
     symbol: str = Query("XAUUSD"),
     timeframe: str = Query("15M"),
     trade_style: str = Query("SCALPING"),
+    analysis_revision: Optional[str] = Query(None, max_length=128),
 ):
     """Return a small live candle delta; full panels stay on the snapshot route."""
     started = time.perf_counter()
@@ -1743,11 +1745,17 @@ def market_candle_tick(
             },
         }
         auto_scan = _auto_analyze_market_tick_if_due(normalized, tf, chart_delta, style)
-        analysis = auto_scan.get("analysis") if auto_scan.get("ran") else None
+        current_revision = auto_scan.get("analysis_revision")
+        deliver_analysis = should_deliver_analysis(
+            auto_scan.get("analysis"),
+            current_revision,
+            analysis_revision,
+        )
+        analysis = auto_scan.get("analysis") if deliver_analysis else None
         setup_snapshot = None
         diamond_snapshot = None
         panel_snapshot = None
-        if auto_scan.get("ran"):
+        if deliver_analysis:
             integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
             panel_snapshot = _verifiable_indicator_panels(
                 integrity_engine,
@@ -1774,6 +1782,8 @@ def market_candle_tick(
                 "stats": diamond_history.stats(normalized),
             }
         auto_status = {key: value for key, value in auto_scan.items() if key != "analysis"}
+        auto_status["delivered"] = deliver_analysis
+        auto_status["ran"] = bool(auto_status.get("ran") or deliver_analysis)
         endpoint_elapsed_ms = round((time.perf_counter() - started) * 1000)
         return {
             "status": "OK" if sync.get("ok") else "DEGRADED",
@@ -1782,6 +1792,7 @@ def market_candle_tick(
             "trading_style": style,
             "chart_delta": chart_delta,
             "analysis": analysis,
+            "analysis_revision": current_revision,
             "panels": panel_snapshot,
             "auto_analysis": auto_status,
             "session_framework": (analysis or {}).get("session_framework"),
@@ -3097,6 +3108,7 @@ def _auto_analyze_market_if_due(
                 "mode": "AUTO_CLOSED_CANDLE",
                 "ran": False,
                 "analysis": previous.get("analysis"),
+                "analysis_revision": previous.get("analysis_revision"),
                 "last_analyzed_candle_time": previous.get("closed_candle_time"),
             }
         if (
@@ -3104,17 +3116,15 @@ def _auto_analyze_market_if_due(
             and previous.get("input_signature") == input_signature
             and previous.get("analysis")
         ):
-            just_completed = bool(previous.get("just_completed"))
-            if just_completed:
-                auto_analysis_state[state_key] = {**previous, "just_completed": False}
             return {
-                "status": "ANALYZED" if just_completed else "CURRENT",
+                "status": "CURRENT",
                 "mode": "AUTO_CLOSED_CANDLE",
-                "ran": just_completed,
+                "ran": False,
                 "analysis": previous["analysis"],
+                "analysis_revision": previous.get("analysis_revision"),
                 "last_analyzed_candle_time": closed_candle_time,
-                "journal_entry": previous.get("journal_entry") if just_completed else None,
-                "tracked_setup": previous.get("tracked_setup") if just_completed else None,
+                "journal_entry": previous.get("journal_entry"),
+                "tracked_setup": previous.get("tracked_setup"),
             }
         auto_analysis_state[state_key] = {
             **previous,
@@ -3136,6 +3146,7 @@ def _auto_analyze_market_if_due(
         "mode": "AUTO_CLOSED_CANDLE",
         "ran": False,
         "analysis": previous.get("analysis"),
+        "analysis_revision": previous.get("analysis_revision"),
         "last_analyzed_candle_time": previous.get("closed_candle_time"),
         "pending_candle_time": closed_candle_time,
     }
@@ -3169,20 +3180,21 @@ def _auto_analyze_market_tick_if_due(
             "status": "SCANNING",
             "mode": "AUTO_CLOSED_CANDLE",
             "ran": False,
-            "analysis": None,
+            "analysis": previous.get("analysis"),
+            "analysis_revision": previous.get("analysis_revision"),
             "last_analyzed_candle_time": previous.get("closed_candle_time"),
             "pending_candle_time": previous.get("pending_candle_time"),
         }
     if (
         previous.get("closed_candle_time") == closed_candle_time
         and previous.get("analysis")
-        and not previous.get("just_completed")
     ):
         return {
             "status": "CURRENT",
             "mode": "AUTO_CLOSED_CANDLE",
             "ran": False,
-            "analysis": None,
+            "analysis": previous.get("analysis"),
+            "analysis_revision": previous.get("analysis_revision"),
             "last_analyzed_candle_time": closed_candle_time,
         }
     return _auto_analyze_market_if_due(normalized, tf, chart, style)
@@ -3207,15 +3219,21 @@ def _run_auto_analysis_job(
             style,
         )
         payload = _market_analysis_payload(result)
+        analysis_revision = build_analysis_revision(
+            state_key,
+            closed_candle_time,
+            input_signature,
+            APP_VERSION,
+        )
         with auto_analysis_lock:
             auto_analysis_state[state_key] = {
                 "in_progress": False,
                 "closed_candle_time": closed_candle_time,
                 "input_signature": input_signature,
                 "analysis": payload,
+                "analysis_revision": analysis_revision,
                 "journal_entry": result.get("journal_entry"),
                 "tracked_setup": result.get("tracked_setup"),
-                "just_completed": True,
             }
     except Exception as exc:
         with auto_analysis_lock:

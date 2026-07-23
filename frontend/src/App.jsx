@@ -105,6 +105,7 @@ import { createMenuActions, groupMenuActions } from './actions/menuActions.js'
 import WorkspaceErrorBoundary from './components/WorkspaceErrorBoundary.jsx'
 import { safeArray, safeObject, safePrice, safeText } from './utils/safeFormat.js'
 import { mergeChartDelta } from './utils/chartDelta.js'
+import { mergeDiamondHistorySnapshot } from './utils/diamondHistory.js'
 import { isIndicatorSnapshotReady, readChartSnapshot, writeChartSnapshot } from './utils/chartSnapshotCache.js'
 import { normalizeChartCandles, normalizeChartSeries } from './utils/chartSeries.js'
 import {
@@ -5282,6 +5283,7 @@ export default function App() {
   const chartLivePollRef = useRef(false)
   const liveCandleSignatureRef = useRef('')
   const liveAnalysisSignatureRef = useRef('')
+  const liveAnalysisRevisionRef = useRef('')
   const oandaSettingsHydratedRef = useRef(false)
   const telegramCommunityDirtyRef = useRef(false)
   const timeframeSwitchIdRef = useRef(0)
@@ -5432,7 +5434,10 @@ export default function App() {
     setOverlayStatus(result.overlays?.overlay_status || null)
     const nextPanels = result.panels || { indicator_panels: {} }
     setPanels(nextPanels)
-    if (result.diamond_history) setDiamondHistory(result.diamond_history)
+    if (result.diamond_history) {
+      setDiamondHistory(current => mergeDiamondHistorySnapshot(current, result.diamond_history))
+    }
+    if (result.analysis_revision) liveAnalysisRevisionRef.current = result.analysis_revision
     if (incomingCount >= 35 && isIndicatorSnapshotReady(nextPanels)) {
       setMessage(current => isCandleSyncNotice(current) ? '' : current)
     }
@@ -5627,7 +5632,7 @@ export default function App() {
       setAnalysisExplanation(explanationResult)
       setMarketOverview(overviewResult)
       setMtfSnapshot(mtfResult)
-      setDiamondHistory(diamondHistoryResult)
+      setDiamondHistory(current => mergeDiamondHistorySnapshot(current, diamondHistoryResult))
       setDiamondValidation(diamondValidationResult)
       setStrategyGovernance(governanceResult)
       setMarketAlerts(alertsResult)
@@ -6381,18 +6386,23 @@ export default function App() {
       chartLivePollRef.current = true
       let nextDelay = basePollDelay()
       try {
-        const result = await getMarketCandleTick(asset, timeframe, tradingStyle)
+        const knownAnalysisRevision = liveAnalysisRevisionRef.current
+        const result = await getMarketCandleTick(asset, timeframe, tradingStyle, knownAnalysisRevision)
         if (!cancelled && result?.chart_delta) {
           const nextChartSignature = chartSnapshotSignature(result.chart_delta)
           const chartChanged = nextChartSignature !== liveCandleSignatureRef.current
+          const nextAnalysisRevision = result.analysis_revision || result.auto_analysis?.analysis_revision || ''
+          const analysisRevisionChanged = Boolean(nextAnalysisRevision)
+            && nextAnalysisRevision !== knownAnalysisRevision
           const nextAnalysisSignature = result.analysis?.symbol
             ? analysisSnapshotSignature(result.analysis, result.auto_analysis)
             : ''
           const analysisChanged = Boolean(nextAnalysisSignature)
-            && nextAnalysisSignature !== liveAnalysisSignatureRef.current
+            && (analysisRevisionChanged || nextAnalysisSignature !== liveAnalysisSignatureRef.current)
 
           if (chartChanged) liveCandleSignatureRef.current = nextChartSignature
           if (analysisChanged) liveAnalysisSignatureRef.current = nextAnalysisSignature
+          if (nextAnalysisRevision) liveAnalysisRevisionRef.current = nextAnalysisRevision
 
           startTransition(() => {
             if (chartChanged) {
@@ -6405,14 +6415,16 @@ export default function App() {
               }
             }
 
+            if (result.diamond_history) {
+              setDiamondHistory(current => mergeDiamondHistorySnapshot(current, result.diamond_history))
+            }
+
             if (analysisChanged) {
               if (result.panels) setPanels(result.panels)
               if (result.session_framework) setSessionFramework(result.session_framework)
               if (result.key_zones) setKeyZones(result.key_zones)
               if (result.news_intelligence) setNewsIntelligence(result.news_intelligence)
               if (result.setup_tracker) setSetupTracker(result.setup_tracker)
-              if (result.diamond_history) setDiamondHistory(result.diamond_history)
-
               const nextAnalysis = result.analysis
               setAnalysis(nextAnalysis)
               setAnalysisExplanation(nextAnalysis.analysis_explanation || null)
