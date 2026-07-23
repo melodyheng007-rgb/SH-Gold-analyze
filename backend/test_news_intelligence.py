@@ -215,6 +215,9 @@ class EconomicNewsIntelligenceTests(unittest.TestCase):
     def test_official_usd_schedule_is_used_when_primary_weekly_feed_is_rate_limited(self) -> None:
         primary = Mock()
         primary.raise_for_status.side_effect = requests.HTTPError("429 rate limited")
+        secondary = Mock()
+        secondary.raise_for_status.return_value = None
+        secondary.json.return_value = {"result": None}
         fallback = Mock()
         fallback.raise_for_status.return_value = None
         fallback.json.return_value = {"data": [{
@@ -227,7 +230,7 @@ class EconomicNewsIntelligenceTests(unittest.TestCase):
         }]}
         engine = EconomicNewsIntelligence(persist_cache=False, enable_official_fallback=True)
 
-        with patch("engine.news_intelligence.requests.get", side_effect=[primary, fallback]):
+        with patch("engine.news_intelligence.requests.get", side_effect=[primary, secondary, fallback]):
             result = engine.weekly_calendar("XAUUSD", self.now)
 
         self.assertEqual(result["feed"]["status"], "OFFICIAL_FALLBACK")
@@ -235,6 +238,29 @@ class EconomicNewsIntelligenceTests(unittest.TestCase):
         self.assertEqual(result["events"][0]["title"], "Federal Funds Rate")
         self.assertEqual(result["events"][0]["risk_window"], "LOCK")
         self.assertTrue(result["events"][0]["release_date_confirmed"])
+
+    def test_tradingview_calendar_is_live_secondary_before_official_fallback(self) -> None:
+        primary = Mock()
+        primary.raise_for_status.side_effect = requests.HTTPError("429 rate limited")
+        secondary = Mock()
+        secondary.raise_for_status.return_value = None
+        secondary.json.return_value = {"result": [{
+            "date": (self.now + timedelta(minutes=45)).isoformat(),
+            "title": "Core PCE Price Index m/m",
+            "currency": "USD",
+            "importance": 3,
+            "forecast": "0.2",
+            "previous": "0.3",
+        }]}
+        engine = EconomicNewsIntelligence(persist_cache=False, enable_official_fallback=True)
+
+        with patch("engine.news_intelligence.requests.get", side_effect=[primary, secondary]):
+            result = engine.weekly_calendar("XAUUSD", self.now)
+
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(result["feed"]["status"], "SECONDARY_LIVE")
+        self.assertEqual(result["feed"]["source"], "TradingView economic calendar")
+        self.assertEqual(result["events"][0]["impact"], "HIGH")
 
 
 if __name__ == "__main__":

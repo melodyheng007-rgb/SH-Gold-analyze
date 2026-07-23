@@ -265,6 +265,40 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   border: 1px solid #30343a;
   transition: background .16s ease, border-color .16s ease, color .16s ease, opacity .16s ease;
 }
+.community-toolbar-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 140px;
+  min-height: 40px;
+  padding: 6px 11px;
+  border: 1px solid #2d7185;
+  border-radius: 6px;
+  color: #6ce5ff;
+  background: #0c1c24;
+  text-decoration: none;
+}
+.community-toolbar-action > span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.community-toolbar-action small {
+  color: #72aaba;
+  font-size: 8px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.community-toolbar-action strong {
+  overflow: hidden;
+  color: #e7fbff;
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.community-toolbar-action:hover { border-color: #61ddfa; background: #12303b; }
+.community-toolbar-action.unavailable { opacity: .55; cursor: default; }
 .auto-engine-status {
   display: flex;
   align-items: center;
@@ -1376,8 +1410,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   box-shadow: 0 1px 5px rgba(0, 0, 0, .28);
   pointer-events: none;
 }
-.signal-pane-label.flow { top: 85%; }
-.signal-pane-label.pressure { top: 93%; }
+.signal-pane-label.flow { top: auto; bottom: 58px; }
+.signal-pane-label.pressure { top: auto; bottom: 7px; }
 .signal-pane-label > span {
   display: flex;
   align-items: center;
@@ -6587,6 +6621,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
     flex: 1 1 auto;
     min-width: 0;
   }
+  .community-toolbar-action {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .toolbar-actions button span {
     overflow: hidden;
     white-space: nowrap;
@@ -6776,6 +6814,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .signal-pane-label b { font-size: 8px; }
   .signal-pane-label small { max-width: 68px; font-size: 6px; }
   .signal-pane-label em { display: none; }
+  .signal-pane-label.flow { bottom: 48px; }
+  .signal-pane-label.pressure { bottom: 5px; }
   .signal-level-labels { width: 66px; }
   .signal-level-labels span {
     max-width: 64px;
@@ -6936,7 +6976,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
     grid-column: 1;
     grid-row: 1;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     padding: 0;
   }
   .intelligence-dock-head nav button {
@@ -7450,6 +7490,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
     gap: 4px;
   }
   .top-toolbar.signal-mode .toolbar-actions button,
+  .top-toolbar.signal-mode .community-toolbar-action,
   .top-toolbar.signal-mode .auto-engine-status,
   .top-toolbar.signal-mode .account-control {
     width: 100%;
@@ -7459,6 +7500,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
     padding: 4px;
   }
   .top-toolbar.signal-mode .auto-engine-status { gap: 5px; }
+  .top-toolbar.signal-mode .community-toolbar-action { gap: 5px; }
+  .top-toolbar.signal-mode .community-toolbar-action small { display: none; }
+  .top-toolbar.signal-mode .community-toolbar-action strong { font-size: 9px; }
   .top-toolbar.signal-mode .auto-engine-status small { display: none; }
   .top-toolbar.signal-mode .auto-engine-status strong { font-size: 9px; }
   .top-toolbar.signal-mode .account-control > i { width: 24px; height: 24px; flex-basis: 24px; }

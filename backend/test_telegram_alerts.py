@@ -1,6 +1,8 @@
 import tempfile
 import unittest
+from contextlib import closing
 from unittest.mock import patch
+from datetime import datetime, timezone
 from pathlib import Path
 
 from engine.telegram_alerts import TelegramDiamondAlerts
@@ -90,6 +92,39 @@ class TelegramDiamondAlertsTests(unittest.TestCase):
 
         self.assertFalse(result["queued"])
         self.assertEqual(result["reason"], "NOT_A_NEW_ALERT")
+
+    def test_failed_new_entry_can_retry_without_becoming_a_duplicate(self):
+        alert = {
+            "is_new": False,
+            "event_key": "XAUUSD:5M:buy-retry:CONFIRMED",
+            "symbol": "XAUUSD",
+            "timeframe": "5M",
+            "kind": "DIAMOND_CONFIRMED_RESEARCH",
+            "side": "BUY",
+        }
+        with closing(self.alerts.connect()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO telegram_diamond_deliveries (
+                    event_key, symbol, timeframe, kind, status, attempts,
+                    alert_json, context_json, created_at
+                ) VALUES (?, ?, ?, ?, 'FAILED', 3, '{}', '{}', ?)
+                """,
+                (
+                    alert["event_key"],
+                    alert["symbol"],
+                    alert["timeframe"],
+                    alert["kind"],
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+        result = self.alerts.enqueue(alert, {"key_zones": {}})
+        self.alerts._queue.join()
+
+        self.assertTrue(result["queued"])
+        self.assertTrue(result["retry"])
+        self.assertEqual(self.alerts.status()["stats"]["delivered"], 1)
 
     def test_invalidation_is_not_delivered_to_telegram(self):
         captured = []

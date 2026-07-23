@@ -45,7 +45,7 @@ class EconomicNewsIntelligence:
     def __init__(
         self,
         calendar_url: Optional[str] = None,
-        cache_seconds: int = 600,
+        cache_seconds: int = 1800,
         timeout_seconds: int = 8,
         persist_cache: bool = True,
         cache_path: Optional[str] = None,
@@ -133,7 +133,7 @@ class EconomicNewsIntelligence:
 
         summary = self._summary(asset, state, risk_event, feed_status)
         return {
-            "status": "READY" if feed_status in {"LIVE", "CACHED", "TEST_FIXTURE"} else feed_status,
+            "status": "READY" if feed_status in {"LIVE", "SECONDARY_LIVE", "CACHED", "TEST_FIXTURE"} else feed_status,
             "state": state,
             "symbol": asset,
             "risk_level": risk_level,
@@ -195,7 +195,7 @@ class EconomicNewsIntelligence:
         relevant_events = [item for item in calendar_events if item["is_relevant"]]
         upcoming_events = [item for item in calendar_events if item["minutes_to_event"] >= 0]
         released_events = [item for item in calendar_events if item["release_status"] == "RELEASED"]
-        status = "READY" if feed_status in {"LIVE", "CACHED", "TEST_FIXTURE"} else feed_status
+        status = "READY" if feed_status in {"LIVE", "SECONDARY_LIVE", "CACHED", "TEST_FIXTURE"} else feed_status
         return {
             "status": status,
             "symbol": asset,
@@ -291,11 +291,26 @@ class EconomicNewsIntelligence:
                 self._fetched_at = now
                 self._last_attempt_at = now
                 self._last_error = None
+                self._active_source_name = "Fair Economy weekly economic calendar"
+                self._active_source_url = self.calendar_url
                 self._persist_disk_cache()
                 return list(self._events), "LIVE", None, self._fetched_at
             except (requests.RequestException, ValueError) as exc:
                 primary_error = str(exc)
                 if self.enable_official_fallback:
+                    try:
+                        secondary_events = self._load_tradingview_events(now)
+                        if secondary_events:
+                            self._events = secondary_events
+                            self._fetched_at = now
+                            self._last_attempt_at = now
+                            self._last_error = f"Primary calendar unavailable: {primary_error}"
+                            self._active_source_name = "TradingView economic calendar"
+                            self._active_source_url = self.actual_calendar_url
+                            self._persist_disk_cache()
+                            return list(self._events), "SECONDARY_LIVE", self._last_error, self._fetched_at
+                    except (requests.RequestException, ValueError) as secondary_exc:
+                        self._last_error = f"Primary: {primary_error}; secondary: {secondary_exc}"
                     try:
                         fallback_events = self._load_official_usd_events(now)
                         if fallback_events:
@@ -308,7 +323,8 @@ class EconomicNewsIntelligence:
                             self._persist_disk_cache()
                             return list(self._events), "OFFICIAL_FALLBACK", self._last_error, self._fetched_at
                     except (requests.RequestException, ValueError) as fallback_exc:
-                        self._last_error = f"Primary: {primary_error}; official fallback: {fallback_exc}"
+                        secondary_error = self._last_error or f"Primary: {primary_error}"
+                        self._last_error = f"{secondary_error}; official fallback: {fallback_exc}"
                 else:
                     self._last_error = primary_error
                 if self._events:
@@ -317,6 +333,57 @@ class EconomicNewsIntelligence:
                 if self._events:
                     return list(self._events), "STALE_DISK_CACHE", self._last_error, self._fetched_at
                 return [], "UNAVAILABLE", self._last_error, None
+
+    def _load_tradingview_events(self, now: datetime) -> list[Dict[str, Any]]:
+        start = (now - timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000Z")
+        end = (now + timedelta(days=7)).strftime("%Y-%m-%dT23:59:59.999Z")
+        response = requests.get(
+            self.actual_calendar_url,
+            params={
+                "from": start,
+                "to": end,
+                "countries": "US,CA,EU,GB,JP,CN,AU,NZ,CH",
+            },
+            timeout=self.timeout_seconds,
+            headers={
+                "User-Agent": "Mozilla/5.0 SH-Market-Analyzer/3.8.7",
+                "Origin": "https://www.tradingview.com",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("result") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("TradingView calendar returned an invalid payload.")
+
+        events = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            timestamp = self._datetime(row.get("date"))
+            title = str(row.get("title") or row.get("indicator") or "").strip()
+            currency = str(row.get("currency") or "").upper().strip()
+            if timestamp is None or not title or not currency:
+                continue
+            importance = row.get("importance")
+            impact = {
+                -1: "HOLIDAY",
+                0: "LOW",
+                1: "LOW",
+                2: "MEDIUM",
+                3: "HIGH",
+            }.get(importance, str(importance or "LOW").upper())
+            events.append({
+                "title": title,
+                "country": currency,
+                "date": timestamp.isoformat(),
+                "impact": impact,
+                "forecast": row.get("forecast"),
+                "previous": row.get("previous"),
+                "actual": self._format_actual_value(row),
+                "source": "TradingView Economic Calendar",
+            })
+        return events
 
     def _load_official_usd_events(self, now: datetime) -> list[Dict[str, Any]]:
         response = requests.get(

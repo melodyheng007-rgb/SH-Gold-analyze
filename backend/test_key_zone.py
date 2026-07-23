@@ -53,8 +53,8 @@ class DiamondZoneEngineTests(unittest.TestCase):
         self.assertIn(result["primary_zone"]["lifecycle"], {"FRESH", "TESTED"})
         self.assertIn(result["quality_grade"], {"A+", "A", "B", "C"})
         self.assertEqual(result["confirmation_state"], "CONFIRMED_HOLD")
-        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V8_6_REGIME_ADAPTIVE")
-        self.assertEqual(result["profile"], "XAU_ADAPTIVE_PRECISION_V7_5M")
+        self.assertEqual(result["strategy"], "SH_DIAMOND_ZONE_V8_7_DUAL_LANE")
+        self.assertEqual(result["profile"], "XAU_ADAPTIVE_DUAL_LANE_V8_7_5M")
         self.assertEqual(result["adaptive_profile"]["asset_model"], "XAU_PRECISION")
         self.assertTrue(result["adaptive_profile"]["quality_floor_preserved"])
         self.assertIn(result["primary_zone"]["signal_tier"], {"EARLY", "QUALIFIED", "CONFIRMED"})
@@ -768,7 +768,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
         base_1h = self.engine._profile("XAUUSD", "1H")
         swing = self.engine._style_adjusted_profile(base_1h, "SWING", "1H")
 
-        self.assertEqual(scalp["target_diamonds_per_100_bars"], "4-6")
+        self.assertEqual(scalp["target_diamonds_per_100_bars"], "5-8")
         self.assertEqual(scalp["core_execution_timeframe"], "5M")
         self.assertEqual(scalp["core_structure_timeframe"], "1H")
         self.assertLess(scalp["entry_cooldown_bars"], base_5m["entry_cooldown_bars"])
@@ -798,7 +798,7 @@ class DiamondZoneEngineTests(unittest.TestCase):
             "5M",
         )
 
-        self.assertEqual((quiet["lead_diamond_score"], normal["lead_diamond_score"], elevated["lead_diamond_score"]), (64, 66, 70))
+        self.assertEqual((quiet["lead_diamond_score"], normal["lead_diamond_score"], elevated["lead_diamond_score"]), (62, 64, 67))
         self.assertEqual(quiet["min_entry_quality"], base["min_entry_quality"])
         self.assertEqual(normal["min_entry_quality"], base["min_entry_quality"])
         self.assertEqual(elevated["min_entry_quality"], base["min_entry_quality"])

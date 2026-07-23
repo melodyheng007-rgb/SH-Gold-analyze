@@ -8,28 +8,28 @@ from typing import Any, Dict, Iterable, Optional
 class DiamondTimeframeFusionEngine:
     """Coordinate existing Diamond evidence around the 5M and 1H execution lanes."""
 
-    VERSION = "DIAMOND_DUAL_CORE_V3_REGIME_LIFECYCLE"
+    VERSION = "DIAMOND_DUAL_CORE_V3_8_7_SETUP_AUTHORITY"
     PROFILES = {
         "SCALPING": {
             "label": "5M Scalp Core",
             "execution_timeframe": "5M",
             "context_timeframe": "15M",
             "anchor_timeframe": "1H",
-            "minimum_score": 68,
-            "strong_score": 82,
-            "cadence": "3-5 qualified setups per 100 completed candles",
+            "minimum_score": 64,
+            "strong_score": 80,
+            "cadence": "5-8 setup-confirmed zones per 100 completed candles",
         },
         "SWING": {
             "label": "1H Intraday / Swing Core",
             "execution_timeframe": "1H",
             "context_timeframe": "4H",
             "anchor_timeframe": "1D",
-            "minimum_score": 72,
-            "strong_score": 84,
-            "cadence": "2-4 qualified setups per 100 completed candles",
+            "minimum_score": 68,
+            "strong_score": 82,
+            "cadence": "3-5 setup-confirmed zones per 100 completed candles",
         },
     }
-    MINIMUM_CANDLES = {"execution": 45, "context": 50, "anchor": 55}
+    MINIMUM_CANDLES = {"execution": 30, "context": 35, "anchor": 45}
     CONCEPT_WEIGHTS = {
         "anchor_structure": 12,
         "context_structure": 14,

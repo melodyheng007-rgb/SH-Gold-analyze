@@ -43,11 +43,17 @@ function memoryStorage() {
 
 test('stores and restores matched full chart history for the same view', () => {
   const storage = memoryStorage()
-  const result = snapshot()
+  const result = snapshot(40, {
+    diamond_history: {
+      status: 'OK',
+      entries: [{ zone_key: 'XAUUSD:5M:zone-1', timeframe: '5M', entry_side: 'BUY' }],
+    },
+  })
   assert.equal(writeChartSnapshot(storage, result, 'XAUUSD', '5M', 10_000), true)
   const restored = readChartSnapshot(storage, 'XAUUSD', '5M', { now: 11_000 })
   assert.equal(restored.chart_data.candles.length, 40)
   assert.equal(restored.panels.indicator_panels.indicator_snapshot.status, 'READY')
+  assert.equal(restored.diamond_history.entries[0].zone_key, 'XAUUSD:5M:zone-1')
 })
 
 test('rejects tick-sized, unmatched, stale, and wrong-view snapshots', () => {

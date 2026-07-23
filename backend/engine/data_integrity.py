@@ -582,7 +582,7 @@ class DataIntegrityEngine:
                 "indicator_snapshot": self._indicator_snapshot(boys_selling, bearishness),
                 "indicator_readiness": indicator_readiness,
                 "market_pressure_score": pressure,
-                "engine_version": "MOMENTUM_V2_CLOSED_CANDLE",
+                "engine_version": "MOMENTUM_V3_8_7_CONFLUENCE",
             },
             "data_integrity": built["data_integrity"],
         }
@@ -1183,6 +1183,19 @@ class DataIntegrityEngine:
             else f"CONFIRMED_{direction}" if direction != "MIXED" and quality_score >= 60
             else "WAIT"
         )
+        macd_acceleration = latest_macd - previous_macd
+        rsi_impulse = latest_rsi - previous_rsi
+        momentum_state = (
+            "BULLISH_EXPANSION"
+            if latest_macd > 0 and macd_acceleration > 0 and latest_rsi >= 52 and rsi_impulse >= 0
+            else "BEARISH_EXPANSION"
+            if latest_macd < 0 and macd_acceleration < 0 and latest_rsi <= 48 and rsi_impulse <= 0
+            else "BULLISH_PULLBACK"
+            if latest_macd >= 0 and latest_rsi >= 48
+            else "BEARISH_PULLBACK"
+            if latest_macd <= 0 and latest_rsi <= 52
+            else "TRANSITION"
+        )
 
         return {
             "status": "READY",
@@ -1196,6 +1209,7 @@ class DataIntegrityEngine:
                 "bias": "BULLISH" if latest_macd > 0 else "BEARISH" if latest_macd < 0 else "NEUTRAL",
                 "momentum": "RISING" if latest_macd > previous_macd else "FALLING" if latest_macd < previous_macd else "FLAT",
                 "strength": round(macd_strength, 1),
+                "acceleration": round(macd_acceleration, 6),
                 "phase": macd_phase,
                 "cross": macd_cross,
                 "divergence": macd_divergence,
@@ -1205,17 +1219,19 @@ class DataIntegrityEngine:
                 "previous": round(previous_rsi, 2),
                 "average": round(latest_rsi_average, 2),
                 "slope": round(latest_rsi_slope, 2),
+                "impulse": round(rsi_impulse, 2),
                 "zone": rsi_zone,
                 "momentum": "RISING" if latest_rsi_slope > 0 else "FALLING" if latest_rsi_slope < 0 else "FLAT",
                 "divergence": rsi_divergence,
             },
             "confluence": confluence,
             "direction": direction,
+            "momentum_state": momentum_state,
             "confirmation": confirmation,
             "quality_score": quality_score,
             "quality_grade": quality_grade,
             "decision_use": "CONFIRMATION_ONLY",
-            "engine_version": "MOMENTUM_V2_CLOSED_CANDLE",
+            "engine_version": "MOMENTUM_V3_8_7_CONFLUENCE",
         }
 
     @staticmethod

@@ -88,8 +88,8 @@ from engine.xauusd_provider import (
     normalize_timeframe,
 )
 
-APP_VERSION = "3.8.6"
-APP_VERSION_LABEL = "V3.8.6"
+APP_VERSION = "3.8.7"
+APP_VERSION_LABEL = "V3.8.7"
 APP_DESCRIPTION = "Diamond Discovery Trading OS"
 logger = logging.getLogger("sh_market_analyzer")
 MARKET_VISUAL_SYMBOLS = {
@@ -177,7 +177,20 @@ analysis_journal = AnalysisJournal(ANALYSIS_JOURNAL_DB)
 setup_tracker = SetupTracker(ANALYSIS_JOURNAL_DB)
 diamond_history = DiamondHistory(ANALYSIS_JOURNAL_DB)
 session_framework_engine = SessionFramework()
-diamond_zone_engine = DiamondZoneEngine()
+diamond_zone_engines = {
+    "SCALPING": DiamondZoneEngine(
+        strategy_name="SH_DIAMOND_ZONE_V8_7_SCALP",
+        engine_version="DIAMOND_V8_7_SCALP_SETUP_CONFIRMED",
+        profile_suffix="SCALP",
+    ),
+    "SWING": DiamondZoneEngine(
+        strategy_name="SH_DIAMOND_ZONE_V8_7_SWING",
+        engine_version="DIAMOND_V8_7_SWING_SETUP_CONFIRMED",
+        profile_suffix="SWING",
+    ),
+}
+# Compatibility alias for diagnostics and validation-lab consumers.
+diamond_zone_engine = diamond_zone_engines["SCALPING"]
 diamond_challenger_engine = DiamondZoneEngine(
     strategy_name="SH_DIAMOND_ZONE_V6_2_SHADOW",
     engine_version=CHALLENGER_VERSION,
@@ -260,6 +273,8 @@ btc_institutional_engine_v4 = InstitutionalAnalysisEngineV4(
 )
 auto_analysis_lock = threading.Lock()
 auto_analysis_state: Dict[str, Dict[str, Any]] = {}
+background_scanner_stop = threading.Event()
+background_scanner_thread: Optional[threading.Thread] = None
 xau_history_sync_lock = threading.Lock()
 oanda_restore_state: Dict[str, Any] = {
     "status": "PENDING" if settings.get("oanda_api_token") else "NOT_CONFIGURED",
@@ -435,6 +450,7 @@ def root():
 
 @app.on_event("startup")
 def startup_log():
+    global background_scanner_thread
     print(f"SH Market Analyzer {APP_VERSION_LABEL} startup")
     print(f"SQLite database path: {SQLITE_DB}")
     print(f"History folder path: {HISTORY_DIR}")
@@ -451,6 +467,19 @@ def startup_log():
             name="oanda-feed-restore",
             daemon=True,
         ).start()
+    if background_scanner_thread is None or not background_scanner_thread.is_alive():
+        background_scanner_stop.clear()
+        background_scanner_thread = threading.Thread(
+            target=_background_diamond_scanner,
+            name="diamond-background-scanner",
+            daemon=True,
+        )
+        background_scanner_thread.start()
+
+
+@app.on_event("shutdown")
+def shutdown_background_scanner():
+    background_scanner_stop.set()
 
 
 @app.post("/api/client-errors")
@@ -1589,6 +1618,13 @@ def market_signal_view(
             analysis,
         )
         diamond_history.record(analysis, tf)
+        diamond_snapshot = {
+            "status": "OK",
+            "symbol": normalized,
+            "strategy": "SH_DIAMOND_ZONE_V8_7_DUAL_LANE",
+            "entries": diamond_history.list(normalized, 200),
+            "stats": diamond_history.stats(normalized),
+        }
         return {
             "status": "OK",
             "symbol": normalized,
@@ -1601,6 +1637,7 @@ def market_signal_view(
             "analysis": _market_analysis_payload(analysis),
             "session_framework": session,
             "key_zones": key_zones,
+            "diamond_history": diamond_snapshot,
             "news_intelligence": news_intelligence,
             "xau_confluence": xau_confluence,
             "market_regime": analysis["market_regime"],
@@ -1642,6 +1679,13 @@ def market_chart_snapshot(
             _locked_market_data_mode(normalized),
             precomputed=bundle["panels"],
         )
+        diamond_snapshot = {
+            "status": "OK",
+            "symbol": normalized,
+            "strategy": "SH_DIAMOND_ZONE_V8_7_DUAL_LANE",
+            "entries": diamond_history.list(normalized, 200),
+            "stats": diamond_history.stats(normalized),
+        }
         return {
             "status": "CACHED_SNAPSHOT",
             "symbol": normalized,
@@ -1650,6 +1694,7 @@ def market_chart_snapshot(
             "chart_data": chart,
             "overlays": bundle["overlays"],
             "panels": panels,
+            "diamond_history": diamond_snapshot,
             "provider_alignment": alignment,
             "history_provenance": {
                 "source": source,
@@ -1724,7 +1769,7 @@ def market_candle_tick(
             diamond_snapshot = {
                 "status": "OK",
                 "symbol": normalized,
-                "strategy": "SH_DIAMOND_ZONE_V6_SIMPLE_DISCOVERY",
+                "strategy": "SH_DIAMOND_ZONE_V8_7_DUAL_LANE",
                 "entries": diamond_history.list(normalized, 200),
                 "stats": diamond_history.stats(normalized),
             }
@@ -1813,7 +1858,7 @@ def market_chart_live(
         diamond_snapshot = {
             "status": "OK",
             "symbol": normalized,
-            "strategy": "SH_DIAMOND_ZONE_V6_SIMPLE_DISCOVERY",
+            "strategy": "SH_DIAMOND_ZONE_V8_7_DUAL_LANE",
             "entries": diamond_history.list(normalized, 200),
             "stats": diamond_history.stats(normalized),
         }
@@ -1979,7 +2024,7 @@ def market_diamond_history(
         return {
             "status": "OK",
             "symbol": normalized,
-            "strategy": "SH_DIAMOND_ZONE_V6_SIMPLE_DISCOVERY",
+            "strategy": "SH_DIAMOND_ZONE_V8_7_DUAL_LANE",
             "ledger_version": "DIAMOND_EVIDENCE_V1",
             "entries": diamond_history.list(normalized, limit),
             "stats": diamond_history.stats(normalized),
@@ -3178,6 +3223,40 @@ def _run_auto_analysis_job(
             auto_analysis_state[state_key] = {**previous, "in_progress": False, "error": str(exc)}
 
 
+def _background_diamond_scanner() -> None:
+    """Keep the two production Diamond lanes alive without browser polling."""
+    lanes = (
+        ("XAUUSD", "5M", "SCALPING", 15),
+        ("BTCUSD", "5M", "SCALPING", 15),
+        ("XAUUSD", "1H", "SWING", 60),
+        ("BTCUSD", "1H", "SWING", 60),
+    )
+    next_run = {f"{symbol}:{timeframe}:{style}": 0.0 for symbol, timeframe, style, _ in lanes}
+    if background_scanner_stop.wait(4):
+        return
+    while not background_scanner_stop.is_set():
+        now = time.monotonic()
+        for symbol, timeframe, style, interval in lanes:
+            key = f"{symbol}:{timeframe}:{style}"
+            if now < next_run[key]:
+                continue
+            next_run[key] = now + interval
+            try:
+                _sync_market_chart_candle(symbol, timeframe)
+                integrity_engine = data_integrity_engine if symbol == "XAUUSD" else btc_data_integrity_engine
+                chart = integrity_engine.chart_data(timeframe, 120)
+                _auto_analyze_market_if_due(symbol, timeframe, chart, style)
+            except Exception as exc:
+                with auto_analysis_lock:
+                    previous = auto_analysis_state.get(key) or {}
+                    auto_analysis_state[key] = {
+                        **previous,
+                        "background_error": str(exc),
+                        "background_checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                    }
+        background_scanner_stop.wait(3)
+
+
 def _market_session_framework(symbol: str, timeframe: str = "15M") -> Dict[str, Any]:
     normalized = _normalize_market_symbol(symbol)
     integrity_engine = data_integrity_engine if normalized == "XAUUSD" else btc_data_integrity_engine
@@ -3211,7 +3290,8 @@ def _market_key_zones(
     normalized = _normalize_market_symbol(symbol)
     tf = normalize_timeframe(timeframe)
     style = _normalize_trading_style(trading_style)
-    style_profile = diamond_zone_engine.trading_style_profile(style)
+    lane_engine = diamond_zone_engines[style]
+    style_profile = lane_engine.trading_style_profile(style)
     required_timeframes = list(style_profile["weights"])
     smr_profile = smr_model_engine.PROFILES[style]
     smr_timeframes = {
@@ -3227,7 +3307,7 @@ def _market_key_zones(
     def calculate_timeframe(zone_timeframe: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         chart_payload = payload or integrity_engine.chart_data(zone_timeframe, 260)
         source = chart_payload.get("data_integrity", {}).get("chart_source")
-        zone_result = diamond_zone_engine.calculate(
+        zone_result = lane_engine.calculate(
             chart_payload.get("candles") or [],
             zone_timeframe,
             source,
@@ -3309,7 +3389,7 @@ def _market_key_zones(
         timeframe_results[zone_timeframe] = (
             result if zone_timeframe == tf else calculate_timeframe(zone_timeframe, timeframe_payload(zone_timeframe))
         )
-    mtf_confluence = diamond_zone_engine.combine_timeframes(timeframe_results, style)
+    mtf_confluence = lane_engine.combine_timeframes(timeframe_results, style)
     result["mtf_confluence"] = mtf_confluence
     result["mtf_state"] = mtf_confluence.get("state")
     result["mtf_risk_filter"] = mtf_confluence.get("risk_filter")

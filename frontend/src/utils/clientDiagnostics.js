@@ -1,6 +1,6 @@
 import { API_BASE_URL } from '../config/api.js'
 
-export const CLIENT_BUILD_ID = '3.8.6.1'
+export const CLIENT_BUILD_ID = '3.8.7.0'
 
 export function reportClientError(scope, error) {
   const message = String(error?.message || error || 'Unknown client error').slice(0, 300)

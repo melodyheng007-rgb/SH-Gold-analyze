@@ -15,8 +15,8 @@ class DiamondZoneEngine:
 
     def __init__(
         self,
-        strategy_name: str = "SH_DIAMOND_ZONE_V8_6_REGIME_ADAPTIVE",
-        engine_version: str = "DIAMOND_V8_6_SETUP_REGIME_GUARDED",
+        strategy_name: str = "SH_DIAMOND_ZONE_V8_7_DUAL_LANE",
+        engine_version: str = "DIAMOND_V8_7_SETUP_CONFIRMED",
         profile_adjustments: Optional[Dict[str, float]] = None,
         profile_suffix: str = "",
     ) -> None:
@@ -2393,7 +2393,7 @@ class DiamondZoneEngine:
             "4H": 5,
         }.get(normalized_timeframe, 8)
         runtime["origin_cooldown_bars"] = {
-            "5M": 12,
+            "5M": 8,
             "15M": 8,
             "1H": 4,
             "4H": 3,
@@ -2414,7 +2414,7 @@ class DiamondZoneEngine:
             runtime["entry_cooldown_bars"] = int(runtime["entry_cooldown_bars"]) + 1
             runtime["zone_merge_distance_atr"] = round(float(runtime["zone_merge_distance_atr"]) + 0.08, 3)
             runtime["zone_merge_window_bars"] = int(runtime["zone_merge_window_bars"]) + 2
-            runtime["max_daily_entries"] = max(2, int(runtime["max_daily_entries"]) - 1)
+            runtime["max_daily_entries"] = max(4, int(runtime["max_daily_entries"]) - 1)
             adjustments.extend(["STRONGER_CONFIRMATION", "TIGHTER_ANTI_CHASE", "LONGER_DEDUPE"])
         elif regime == "QUIET":
             runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + 2
@@ -2430,7 +2430,7 @@ class DiamondZoneEngine:
         elif structure == "TRENDING" and normalized_timeframe in {"5M", "15M"}:
             runtime["active_follow_window_bars"] = int(runtime["active_follow_window_bars"]) + 1
             runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 1
-            runtime["origin_cooldown_bars"] = int(runtime["origin_cooldown_bars"]) + 2
+            runtime["origin_cooldown_bars"] = int(runtime["origin_cooldown_bars"]) + 1
             adjustments.extend(["TREND_CONTINUATION_WINDOW", "TREND_ZONE_PATIENCE", "STRONG_TREND_ANTI_SPAM"])
 
         runtime["adaptive_regime"] = regime
@@ -2446,7 +2446,7 @@ class DiamondZoneEngine:
     @staticmethod
     def _adaptive_profile_summary(profile: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "version": "ADAPTIVE_PROFILE_V8_DUAL_CORE",
+            "version": "ADAPTIVE_PROFILE_V8_7_DUAL_LANE",
             "asset_model": profile.get("asset_model") or "CROSS_ASSET",
             "regime": profile.get("adaptive_regime") or "WAITING",
             "structure": profile.get("adaptive_structure") or "WAITING",
@@ -2484,39 +2484,39 @@ class DiamondZoneEngine:
             runtime["target_diamonds_per_100_bars"] = "3-5" if normalized_timeframe == "1H" else "2-4"
             runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + (2 if normalized_timeframe == "1H" else 1)
             runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + (3 if normalized_timeframe == "1H" else 2)
-            runtime["entry_cooldown_bars"] = int(runtime["entry_cooldown_bars"]) + 1
+            runtime["entry_cooldown_bars"] = max(3, int(runtime["entry_cooldown_bars"]))
             if normalized_timeframe == "1H":
                 asset_model = str(runtime.get("asset_model") or "")
                 quality_floor = 72 if asset_model == "XAU_PRECISION" else 70
                 runtime["lead_diamond_score"] = {
-                    "QUIET": 66,
-                    "NORMAL": 68,
-                    "ELEVATED": 72,
-                }.get(str(runtime.get("adaptive_regime") or "NORMAL"), 68)
+                    "QUIET": 64,
+                    "NORMAL": 66,
+                    "ELEVATED": 69,
+                }.get(str(runtime.get("adaptive_regime") or "NORMAL"), 66)
                 runtime["active_follow_window_bars"] = int(runtime["active_follow_window_bars"]) + 1
                 runtime["min_entry_quality"] = max(int(runtime["min_entry_quality"]), quality_floor)
                 runtime["min_active_entry_quality"] = max(int(runtime["min_active_entry_quality"]), quality_floor - 4)
                 runtime["min_reclaim_entry_quality"] = max(int(runtime["min_reclaim_entry_quality"]), quality_floor - 4)
                 runtime["max_retest_touches"] = min(2, int(runtime["max_retest_touches"]))
-                runtime["max_daily_entries"] = max(3, int(runtime["max_daily_entries"]))
+                runtime["max_daily_entries"] = max(3, min(4, int(runtime["max_daily_entries"]) + 1))
             return runtime
 
         runtime["trading_style"] = "SCALPING"
         runtime["core_execution_timeframe"] = "5M"
         runtime["core_structure_timeframe"] = "1H"
-        runtime["target_diamonds_per_100_bars"] = "4-6"
+        runtime["target_diamonds_per_100_bars"] = "5-8"
         if normalized_timeframe == "5M":
             regime = str(runtime.get("adaptive_regime") or "NORMAL")
             runtime["lead_diamond_score"] = {
-                "QUIET": 64,
-                "NORMAL": 66,
-                "ELEVATED": 70,
-            }.get(regime, 66)
+                "QUIET": 62,
+                "NORMAL": 64,
+                "ELEVATED": 67,
+            }.get(regime, 64)
             runtime["entry_window_bars"] = int(runtime["entry_window_bars"]) + 2
             runtime["active_follow_window_bars"] = int(runtime["active_follow_window_bars"]) + 1
             runtime["lead_zone_max_age_bars"] = int(runtime["lead_zone_max_age_bars"]) + 1
-            runtime["entry_cooldown_bars"] = max(5, int(runtime["entry_cooldown_bars"]) - 1)
-            runtime["max_daily_entries"] = min(4, int(runtime["max_daily_entries"]))
+            runtime["entry_cooldown_bars"] = max(4, int(runtime["entry_cooldown_bars"]) - 2)
+            runtime["max_daily_entries"] = max(6, min(8, int(runtime["max_daily_entries"]) + 2))
         return runtime
 
     @staticmethod
@@ -2525,7 +2525,7 @@ class DiamondZoneEngine:
         normalized_timeframe = str(timeframe or "15M").upper()
         if normalized_symbol == "XAUUSD":
             entry_profiles = {
-                "5M": (0.48, 0.98, 0.64, 62, 1.45, 28, 8, 56, 74),
+                "5M": (0.46, 0.95, 0.62, 60, 1.45, 30, 8, 54, 70),
                 "15M": (0.52, 1.08, 0.67, 66, 1.42, 18, 8, 65, 72),
                 "1H": (0.50, 1.06, 0.66, 65, 1.40, 12, 6, 64, 70),
                 "4H": (0.50, 1.05, 0.65, 65, 1.38, 9, 4, 64, 70),
@@ -2540,9 +2540,9 @@ class DiamondZoneEngine:
             body, range_ratio, close, score, expansion = context_profiles.get(normalized_timeframe, context_profiles["15M"])
             location_window = {"5M": 36, "15M": 32, "1H": 24, "4H": 20}.get(normalized_timeframe, 32)
             wider_execution_location = 54 if normalized_timeframe == "5M" else 64 if normalized_timeframe == "15M" else 62
-            origin_quality_floor = 64 if normalized_timeframe == "5M" else 74 if normalized_timeframe == "15M" else 72
+            origin_quality_floor = 60 if normalized_timeframe == "5M" else 70 if normalized_timeframe == "15M" else 68
             return {
-                "name": f"XAU_ADAPTIVE_PRECISION_V7_{normalized_timeframe}",
+                "name": f"XAU_ADAPTIVE_DUAL_LANE_V8_7_{normalized_timeframe}",
                 "asset_model": "XAU_PRECISION",
                 "min_visible_diamond_score": DiamondZoneEngine.XAU_MIN_VISIBLE_DIAMOND_SCORE,
                 "min_body_ratio": body,
@@ -2630,7 +2630,7 @@ class DiamondZoneEngine:
                 "entry_window_bars": window,
                 "entry_cooldown_bars": cooldown,
                 "entry_dedupe_distance_atr": 0.35,
-                "max_daily_entries": 5 if normalized_timeframe == "5M" else 3,
+                "max_daily_entries": 6 if normalized_timeframe == "5M" else 3,
                 "context_zone_limit": 24 if normalized_timeframe == "5M" else 14,
                 "lead_diamond_score": 70,
                 "lead_zone_max_age_bars": 24 if normalized_timeframe == "5M" else 12,

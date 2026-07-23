@@ -47,6 +47,7 @@ export function createChartSnapshotRecord(result, asset, timeframe, now = Date.n
       chart_data: chartData,
       overlays: result?.overlays || { overlays: {} },
       panels: result?.panels || { indicator_panels: {} },
+      diamond_history: result?.diamond_history || null,
       provider_alignment: result.provider_alignment,
       history_provenance: result?.history_provenance || null,
     },

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import queue
 import sqlite3
 import threading
@@ -34,6 +35,7 @@ class TelegramDiamondAlerts:
             daemon=True,
         )
         self._worker.start()
+        self._restore_pending()
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=20)
@@ -54,6 +56,8 @@ class TelegramDiamondAlerts:
                     attempts INTEGER NOT NULL DEFAULT 0,
                     telegram_message_id TEXT,
                     last_error TEXT,
+                    alert_json TEXT NOT NULL DEFAULT '{}',
+                    context_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     delivered_at TEXT
                 );
@@ -61,6 +65,18 @@ class TelegramDiamondAlerts:
                     ON telegram_diamond_deliveries(status, id DESC);
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(telegram_diamond_deliveries)").fetchall()
+            }
+            if "alert_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE telegram_diamond_deliveries ADD COLUMN alert_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "context_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE telegram_diamond_deliveries ADD COLUMN context_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def status(self) -> Dict[str, Any]:
         with closing(self.connect()) as connection:
@@ -160,7 +176,7 @@ class TelegramDiamondAlerts:
         return result
 
     def enqueue(self, alert: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Dict[str, Any]:
-        if not alert or alert.get("is_new") is not True:
+        if not alert:
             return {"queued": False, "reason": "NOT_A_NEW_ALERT"}
         if str(alert.get("kind") or "") not in self.ALLOWED_KINDS:
             return {"queued": False, "reason": "ALERT_KIND_NOT_DELIVERED"}
@@ -173,30 +189,117 @@ class TelegramDiamondAlerts:
         if not event_key:
             return {"queued": False, "reason": "MISSING_EVENT_KEY"}
         now = datetime.now(timezone.utc).isoformat()
+        context = self._delivery_context(analysis)
+        alert_json = json.dumps(dict(alert), separators=(",", ":"), default=str)
+        context_json = json.dumps(context, separators=(",", ":"), default=str)
         with self._lock, closing(self.connect()) as connection, connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO telegram_diamond_deliveries (
-                    event_key, symbol, timeframe, kind, status, created_at
-                ) VALUES (?, ?, ?, ?, 'QUEUED', ?)
-                """,
-                (
-                    event_key,
-                    str(alert.get("symbol") or "UNKNOWN"),
-                    str(alert.get("timeframe") or "-"),
-                    str(alert.get("kind") or "DIAMOND_CONFIRMED_RESEARCH"),
-                    now,
-                ),
+            existing = connection.execute(
+                "SELECT status, attempts FROM telegram_diamond_deliveries WHERE event_key = ?",
+                (event_key,),
+            ).fetchone()
+            retry_failed = bool(
+                existing
+                and existing["status"] == "FAILED"
+                and int(existing["attempts"] or 0) < 9
             )
-            inserted = cursor.rowcount == 1
-        if not inserted:
-            return {"queued": False, "reason": "ALREADY_DELIVERED_OR_QUEUED"}
+            if existing and not retry_failed:
+                return {"queued": False, "reason": "ALREADY_DELIVERED_OR_QUEUED"}
+            if not existing and alert.get("is_new") is not True:
+                return {"queued": False, "reason": "NOT_A_NEW_ALERT"}
+            if retry_failed:
+                connection.execute(
+                    """
+                    UPDATE telegram_diamond_deliveries
+                    SET status = 'QUEUED', last_error = NULL, alert_json = ?, context_json = ?
+                    WHERE event_key = ?
+                    """,
+                    (alert_json, context_json, event_key),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO telegram_diamond_deliveries (
+                        event_key, symbol, timeframe, kind, status,
+                        alert_json, context_json, created_at
+                    ) VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?)
+                    """,
+                    (
+                        event_key,
+                        str(alert.get("symbol") or "UNKNOWN"),
+                        str(alert.get("timeframe") or "-"),
+                        str(alert.get("kind") or "DIAMOND_CONFIRMED_RESEARCH"),
+                        alert_json,
+                        context_json,
+                        now,
+                    ),
+                )
         try:
-            self._queue.put_nowait((dict(alert), self._delivery_context(analysis)))
+            self._queue.put_nowait((dict(alert), context))
         except queue.Full:
-            self._mark(event_key, "FAILED", 0, "Alert queue is full.")
+            self._mark(
+                event_key,
+                "FAILED",
+                int(existing["attempts"] or 0) if existing else 0,
+                "Alert queue is full.",
+            )
             return {"queued": False, "reason": "QUEUE_FULL"}
-        return {"queued": True, "event_key": event_key}
+        return {"queued": True, "event_key": event_key, "retry": retry_failed}
+
+    def _restore_pending(self) -> None:
+        with self._lock, closing(self.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT alert_json, context_json
+                FROM telegram_diamond_deliveries
+                WHERE status IN ('QUEUED', 'FAILED') AND attempts < 9
+                ORDER BY id
+                """
+            ).fetchall()
+        for row in rows:
+            try:
+                alert = json.loads(row["alert_json"] or "{}")
+                context = json.loads(row["context_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not alert.get("event_key"):
+                continue
+            try:
+                self._queue.put_nowait((alert, context))
+            except queue.Full:
+                break
+
+    def _requeue_failed(self, event_key: str) -> None:
+        with self._lock, closing(self.connect()) as connection, connection:
+            row = connection.execute(
+                """
+                SELECT status, attempts, alert_json, context_json
+                FROM telegram_diamond_deliveries WHERE event_key = ?
+                """,
+                (event_key,),
+            ).fetchone()
+            if not row or row["status"] != "FAILED" or int(row["attempts"] or 0) >= 9:
+                return
+            try:
+                alert = json.loads(row["alert_json"] or "{}")
+                context = json.loads(row["context_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return
+            connection.execute(
+                "UPDATE telegram_diamond_deliveries SET status = 'QUEUED' WHERE event_key = ?",
+                (event_key,),
+            )
+        try:
+            self._queue.put_nowait((alert, context))
+        except queue.Full:
+            self._mark(event_key, "FAILED", int(row["attempts"] or 0), "Alert queue is full.")
+
+    def _delivery_attempts(self, event_key: str) -> int:
+        with closing(self.connect()) as connection:
+            row = connection.execute(
+                "SELECT attempts FROM telegram_diamond_deliveries WHERE event_key = ?",
+                (event_key,),
+            ).fetchone()
+        return int((row["attempts"] if row else 0) or 0)
 
     def _run(self) -> None:
         while True:
@@ -214,18 +317,24 @@ class TelegramDiamondAlerts:
             self._mark(event_key, "FAILED", 0, "Telegram alerts are disabled or incomplete.")
             return
 
-        message = self._message(alert, context)
+        message = self._khmer_message(alert, context)
         last_error = "Telegram delivery failed."
+        previous_attempts = self._delivery_attempts(event_key)
         for attempt in range(1, 4):
             result = self._send_message(token, chat_id, message)
             if result.get("ok"):
                 message_id = str((result.get("result") or {}).get("message_id") or "")
-                self._mark(event_key, "DELIVERED", attempt, None, message_id)
+                self._mark(event_key, "DELIVERED", previous_attempts + attempt, None, message_id)
                 return
             last_error = str(result.get("message") or last_error)
             if attempt < 3:
                 time.sleep(attempt)
-        self._mark(event_key, "FAILED", 3, last_error)
+        total_attempts = previous_attempts + 3
+        self._mark(event_key, "FAILED", total_attempts, last_error)
+        if total_attempts < 9:
+            retry = threading.Timer(30, self._requeue_failed, args=(event_key,))
+            retry.daemon = True
+            retry.start()
 
     def _send_message(self, token: str, chat_id: str, text: str) -> Dict[str, Any]:
         return self._request(token, "sendMessage", {
@@ -295,6 +404,43 @@ class TelegramDiamondAlerts:
             "regime_direction": regime.get("regime_direction"),
             "confidence_label": zones.get("confidence_label"),
         }
+
+    @staticmethod
+    def _khmer_message(alert: Dict[str, Any], context: Dict[str, Any]) -> str:
+        raw_side = str(alert.get("side") or "WAIT").upper()
+        side = html.escape({"BUY": "ទិញ (BUY)", "SELL": "លក់ (SELL)"}.get(raw_side, raw_side))
+        symbol = html.escape(str(alert.get("symbol") or "UNKNOWN").upper())
+        timeframe = html.escape(str(alert.get("timeframe") or "-").upper())
+        raw_style = str(context.get("style") or "-").upper()
+        style = html.escape(
+            {"SCALPING": "Scalp", "SCALP": "Scalp", "SWING": "Swing"}.get(raw_style, raw_style.title())
+        )
+        grade = html.escape(str(context.get("grade") or "-"))
+        score = html.escape(str(context.get("score") or "-"))
+        zone = context.get("zone")
+        zone_text = f"{float(zone):.5f}" if isinstance(zone, (int, float)) else "-"
+        model = html.escape(str(context.get("model") or "STRUCTURAL SETUP").replace("_", " ").title())
+        raw_regime = str(context.get("regime") or "WAITING").upper()
+        regime = html.escape({
+            "TRENDING_BULLISH": "ទីផ្សារកំពុងឡើង",
+            "TRENDING_BEARISH": "ទីផ្សារកំពុងចុះ",
+            "RANGE": "ទីផ្សារក្នុងចន្លោះ",
+            "RANGING": "ទីផ្សារក្នុងចន្លោះ",
+            "WAITING": "កំពុងរង់ចាំទិន្នន័យ",
+        }.get(raw_regime, raw_regime.replace("_", " ").title()))
+        confidence = html.escape(str(context.get("confidence_label") or "Setup Confirmed"))
+        return (
+            "<b>SH DIAMOND ENTRY ថ្មី</b>\n"
+            f"<b>{symbol} | {timeframe} | {style}</b>\n\n"
+            f"ទិសដៅ៖ <b>{side}</b>\n"
+            f"កម្រិត៖ <b>{grade}</b> ({score}%)\n"
+            f"តំបន់ Entry៖ <b>{zone_text}</b>\n"
+            f"ស្ថានភាព៖ {confidence}\n"
+            f"Strategy៖ {model}\n"
+            f"ស្ថានភាពទីផ្សារ៖ {regime}\n\n"
+            "<b>Engine បានបញ្ជាក់ Entry Zone ថ្មី។</b>\n"
+            "សូមពិនិត្យតម្លៃបច្ចុប្បន្ន និងព័ត៌មានទីផ្សារមុនពេលសម្រេចចិត្ត។"
+        )
 
     @staticmethod
     def _message(alert: Dict[str, Any], context: Dict[str, Any]) -> str:

@@ -63,12 +63,18 @@ class ClosedCandleAlerts:
         execution = analysis.get("execution_reality") or {}
         news = analysis.get("news_intelligence") or {}
         primary = zones.get("primary_zone") or {}
+        event = zones.get("latest_entry_event") or {}
+        fresh_completed_event = self._event_is_current(
+            event,
+            reconciliation.get("latest_closed_time"),
+            normalized_timeframe,
+        )
         confirmed = bool(
             zones.get("entry_event_status") == "CONFIRMED_ENTRY"
-            and decision_quality.get("current_event") is True
+            and event
+            and (decision_quality.get("current_event") is True or fresh_completed_event)
             and str(primary.get("smt_execution_gate") or "NEUTRAL").upper() != "BLOCK_CONFLICT"
         )
-        event = zones.get("latest_entry_event") or {}
         transition = "CONFIRMED"
         if confirmed:
             side = str(event.get("entry_side") or "WAIT").upper()
@@ -232,3 +238,26 @@ class ClosedCandleAlerts:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _event_is_current(
+        cls,
+        event: Dict[str, Any],
+        latest_closed_time: Any,
+        timeframe: str,
+    ) -> bool:
+        event_time = cls._integer(
+            event.get("confirmation_time") or event.get("available_at") or event.get("time")
+        )
+        latest = cls._integer(latest_closed_time)
+        if event_time is None or latest is None or event_time > latest:
+            return False
+        seconds = {
+            "1M": 60,
+            "5M": 300,
+            "15M": 900,
+            "1H": 3600,
+            "4H": 14400,
+            "1D": 86400,
+        }.get(str(timeframe or "").upper(), 900)
+        return latest - event_time <= seconds

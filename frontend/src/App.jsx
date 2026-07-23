@@ -155,8 +155,8 @@ const CHART_MODES = {
 const NO_HISTORY_MESSAGE = 'No candle data available. Start live builder or import recent history.'
 const GAP_MESSAGE = 'History gap detected. Live price is not aligned with local history.'
 const FULL_ANALYSIS_MESSAGE = 'Full analysis requires recent 1D, 4H, 1H, 15M, and 5M candle history.'
-const APP_VERSION = 'V3.8.6'
-const APP_TITLE = 'SH Market Analyzer V3.8.6 - Adaptive Diamond Intelligence'
+const APP_VERSION = 'V3.8.7'
+const APP_TITLE = 'SH Market Analyzer V3.8.7 - Dual-Lane Diamond Intelligence'
 const DEFAULT_LOCKED_MODE = {
   locked_mode: 'NO_DATA_MODE',
   data_mode: 'NO_DATA_MODE',
@@ -776,7 +776,7 @@ function SymbolBadge({ latestPrice, asset = 'XAUUSD' }) {
   const config = MARKET_ASSETS[asset] || MARKET_ASSETS.XAUUSD
   return (
     <div className="symbol-badge">
-      <span>SH Market Analyzer <b>V3.8.6</b></span>
+      <span>SH Market Analyzer <b>V3.8.7</b></span>
       <div><strong>{asset}</strong><em>{config.label}</em></div>
       <p>{asPrice(latestPrice)}</p>
     </div>
@@ -817,14 +817,12 @@ function AccountControl() {
   )
 }
 
-function AccountDrawer({ open, communityUrl = '', onClose }) {
+function AccountDrawer({ open, onClose }) {
   const { user, signOut } = useAuth()
   const [busy, setBusy] = useState(false)
   if (!open) return null
   const name = String(user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'User')
   const initial = name.trim().charAt(0).toUpperCase() || 'U'
-  const activeCommunityUrl = String(communityUrl || DEFAULT_TELEGRAM_COMMUNITY_URL).trim()
-  const communityReady = /^https:\/\/(t\.me|telegram\.me)\//i.test(activeCommunityUrl)
   const handleSignOut = async () => {
     setBusy(true)
     try {
@@ -850,23 +848,6 @@ function AccountDrawer({ open, communityUrl = '', onClose }) {
             <ShieldCheck size={16} />
             <span><strong>Protected workspace</strong><small>Your market preferences stay connected to this session.</small></span>
           </div>
-          <a
-            className={`account-community-link ${communityReady ? '' : 'unavailable'}`}
-            href={communityReady ? activeCommunityUrl : undefined}
-            target={communityReady ? '_blank' : undefined}
-            rel={communityReady ? 'noreferrer' : undefined}
-            aria-disabled={!communityReady}
-            onClick={event => {
-              if (!communityReady) event.preventDefault()
-            }}
-          >
-            <i><Send size={18} /></i>
-            <span>
-              <strong>{communityReady ? 'Join Telegram Community' : 'Telegram Community'}</strong>
-              <small>{communityReady ? 'Diamond updates, market notes and community discussion.' : 'Official invite link is being prepared.'}</small>
-            </span>
-            <ChevronRight size={18} />
-          </a>
           <button className="account-focus-signout" onClick={handleSignOut} disabled={busy}>
             <LogOut size={15} /><span>{busy ? 'Signing out' : 'Sign out'}</span>
           </button>
@@ -1092,22 +1073,9 @@ function ChartModeSwitcher({ chartMode, onChange }) {
   )
 }
 
-function TopToolbar({ asset, timeframe, tradingStyle, chartMode, latestPrice, onAsset, onTimeframe, onTradingStyle, onChartMode, onNews, onMenu, autoState, newsRisk, backendOffline, feedMatched }) {
-  const entryStatus = String(autoState?.entry?.status || '').toUpperCase()
-  const scanStatus = String(autoState?.scan?.status || '').toUpperCase()
-  const state = backendOffline
-    ? { label: 'Offline', tone: 'offline' }
-    : feedMatched === false
-      ? { label: 'Data Lock', tone: 'locked' }
-    : entryStatus === 'AUTO_ARMED'
-      ? { label: 'Diamond Armed', tone: 'armed' }
-      : scanStatus === 'SCANNING'
-        ? { label: 'Scanning Candle', tone: 'scanning' }
-        : entryStatus === 'BLOCKED_DATA_TRUST'
-          ? { label: 'Data Lock', tone: 'locked' }
-          : entryStatus === 'NEWS_LOCKED'
-            ? { label: 'News Lock', tone: 'locked' }
-            : { label: 'Watching Gates', tone: 'watching' }
+function TopToolbar({ asset, timeframe, tradingStyle, chartMode, latestPrice, onAsset, onTimeframe, onTradingStyle, onChartMode, onNews, onMenu, newsRisk, communityUrl }) {
+  const activeCommunityUrl = String(communityUrl || DEFAULT_TELEGRAM_COMMUNITY_URL).trim()
+  const communityReady = /^https:\/\/(t\.me|telegram\.me)\//i.test(activeCommunityUrl)
   return (
     <header className={`top-toolbar ${chartMode === 'signal' ? 'signal-mode' : 'tradingview-mode'}`}>
       <SymbolBadge asset={asset} latestPrice={latestPrice} />
@@ -1168,10 +1136,20 @@ function TopToolbar({ asset, timeframe, tradingStyle, chartMode, latestPrice, on
           <span>News</span>
           {['HIGH', 'ELEVATED'].includes(String(newsRisk || '').toUpperCase()) && <i aria-hidden="true" />}
         </button>
-        <div className={`auto-engine-status ${state.tone}`} aria-live="polite" title="Automatic completed-candle analysis status">
-          <Activity size={16} />
-          <span><small>Auto Engine</small><strong>{state.label}</strong></span>
-        </div>
+        <a
+          className={`community-toolbar-action ${communityReady ? '' : 'unavailable'}`}
+          href={communityReady ? activeCommunityUrl : undefined}
+          target={communityReady ? '_blank' : undefined}
+          rel={communityReady ? 'noreferrer' : undefined}
+          aria-disabled={!communityReady}
+          onClick={event => {
+            if (!communityReady) event.preventDefault()
+          }}
+          title={communityReady ? 'Join the SH Telegram community' : 'Community invite is being prepared'}
+        >
+          <Send size={16} />
+          <span><small>Community</small><strong>{communityReady ? 'Join Telegram' : 'Coming Soon'}</strong></span>
+        </a>
         <button className="settings-action" title="Open settings" onClick={onMenu}>
           <Settings size={16} />
           <span>Settings</span>
@@ -1407,7 +1385,6 @@ function derivePersistedDiamondMarkers(candles, history, timeframe) {
       if (!Number.isFinite(markerTime) || !Number.isFinite(markerPrice)) return null
       const qualityScore = clampPercent(diamondHistoricalScore(entry))
       const scoreFloor = diamondVisibleFloor(entry)
-      if (qualityScore < Math.max(60, scoreFloor)) return null
       const grade = entry.peak_diamond_grade || entry.diamond_grade || diamondGradeFromScore(qualityScore, false, scoreFloor)
       const gradeLabel = diamondGradeLabel(grade, qualityScore, scoreFloor)
       const rejected = classification === 'INVALIDATED_CONTEXT'
@@ -1521,10 +1498,16 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
   }
   markers.forEach(marker => {
     const side = String(marker.entry_side || marker.direction || '').toUpperCase()
-    const key = `${Number(marker.time)}:${side}`
+    const key = marker.zone_key || marker.event_id || marker.id || `${Number(marker.time)}:${side}`
     merged.set(key, preferMarker(merged.get(key), marker))
   })
 
+  const persistent = [...merged.values()]
+    .filter(marker => marker.persistent)
+    .sort((left, right) => Number(left.time) - Number(right.time))
+  const persistentCoordinates = new Set(persistent.map(marker => (
+    `${Number(marker.time)}:${String(marker.entry_side || marker.direction || '').toUpperCase()}`
+  )))
   const timeframeSeconds = {
     '1M': 60,
     '5M': 300,
@@ -1534,17 +1517,21 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
     '1D': 86400,
   }[String(timeframe || '15M').toUpperCase()] || 900
   const clusterBars = {
-    '1M': 15,
-    '5M': 24,
-    '15M': 12,
-    '1H': 8,
-    '4H': 5,
-    '1D': 3,
-  }[String(timeframe || '15M').toUpperCase()] || 12
+    '1M': 4,
+    '5M': 4,
+    '15M': 3,
+    '1H': 2,
+    '4H': 2,
+    '1D': 1,
+  }[String(timeframe || '15M').toUpperCase()] || 3
   const clusterWindow = timeframeSeconds * clusterBars
   const clusters = []
 
   ;[...merged.values()]
+    .filter(marker => !marker.persistent)
+    .filter(marker => !persistentCoordinates.has(
+      `${Number(marker.time)}:${String(marker.entry_side || marker.direction || '').toUpperCase()}`,
+    ))
     .sort((left, right) => Number(left.time) - Number(right.time))
     .forEach(marker => {
       const side = String(marker.entry_side || marker.direction || '').toUpperCase()
@@ -1584,7 +1571,7 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
     '4H': 1,
     '1D': 1,
   }[String(timeframe || '15M').toUpperCase()] || 3)
-  return compacted.reduce((selected, marker) => {
+  const compactedTransient = compacted.reduce((selected, marker) => {
     const previous = selected[selected.length - 1]
     if (!previous) return [marker]
     const previousSide = String(previous.entry_side || previous.direction || '').toUpperCase()
@@ -1601,6 +1588,8 @@ function mergeCrystalMarkers(markers, timeframe = '15M') {
     selected.push(marker)
     return selected
   }, [])
+  return [...persistent, ...compactedTransient]
+    .sort((left, right) => Number(left.time) - Number(right.time))
 }
 
 function MtfMarketMap({ snapshot }) {
@@ -1654,7 +1643,7 @@ function ConfidenceEnginePanel({ analysis, governance, alerts, onAcknowledge }) 
     <section className="confidence-engine" aria-label="Confidence Engine diagnostics and strategy governance">
       <header>
         <span><ShieldCheck size={14} /> Confidence Engine</span>
-        <strong>V3.8.6</strong>
+        <strong>V3.8.7</strong>
         <em className={summary.tone}>{stageLabel(summary.status)}</em>
         <small>{summary.readinessPassed}/{summary.readinessTotal} execution gates ready</small>
       </header>
@@ -3024,9 +3013,19 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
     panes[0]?.setStretchFactor(.84)
     panes[1]?.setStretchFactor(.08)
     panes[2]?.setStretchFactor(.08)
+    const sizeIndicatorPanes = () => {
+      const compact = (containerRef.current?.clientWidth || window.innerWidth) <= 720
+      const currentPanes = chart.panes()
+      currentPanes[1]?.setHeight(compact ? 46 : 56)
+      currentPanes[2]?.setHeight(compact ? 44 : 52)
+    }
+    sizeIndicatorPanes()
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateLevelPositions)
     const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
-      requestAnimationFrame(updateLevelPositions)
+      requestAnimationFrame(() => {
+        sizeIndicatorPanes()
+        updateLevelPositions()
+      })
     })
     resizeObserver?.observe(containerRef.current)
     return () => {
@@ -3131,8 +3130,8 @@ function SignalChartView({ asset, timeframe, timeframeTransition, chartData, ove
         </div>
         <div
           className="signal-crystal-guide"
-          title="The chart groups nearby Diamonds and keeps the strongest one. Complete evidence remains in History."
-          aria-label={`${crystalSummary.total} grouped Diamond key zones on chart, ${crystalSummary.replayed} engine replay results`}
+          title="Saved Diamond history remains visible while new setup-confirmed zones are added automatically."
+          aria-label={`${crystalSummary.total} Diamond key zones on chart, ${crystalSummary.saved} saved history records`}
         >
           <span className="buy"><Diamond size={11} />Buy Zone</span>
           <span className="sell"><Diamond size={11} />Sell Zone</span>
@@ -5226,7 +5225,7 @@ export default function App() {
     history_provenance: initialView.snapshot.history_provenance || null,
   }) : null)
   const [mtfSnapshot, setMtfSnapshot] = useState(null)
-  const [diamondHistory, setDiamondHistory] = useState(null)
+  const [diamondHistory, setDiamondHistory] = useState(() => initialView.snapshot?.diamond_history || null)
   const [diamondValidation, setDiamondValidation] = useState(null)
   const [strategyGovernance, setStrategyGovernance] = useState(null)
   const [marketAlerts, setMarketAlerts] = useState(null)
@@ -5433,6 +5432,7 @@ export default function App() {
     setOverlayStatus(result.overlays?.overlay_status || null)
     const nextPanels = result.panels || { indicator_panels: {} }
     setPanels(nextPanels)
+    if (result.diamond_history) setDiamondHistory(result.diamond_history)
     if (incomingCount >= 35 && isIndicatorSnapshotReady(nextPanels)) {
       setMessage(current => isCandleSyncNotice(current) ? '' : current)
     }
@@ -5459,6 +5459,7 @@ export default function App() {
       chart_data: result.chart_data,
       overlays: result.overlays,
       panels: result.panels,
+      diamond_history: result.diamond_history,
       provider_alignment: result.provider_alignment,
       history_provenance: result.history_provenance,
       status: result.status,
@@ -6306,7 +6307,7 @@ export default function App() {
 
   useEffect(() => {
     if (!newsCalendarOpen) return
-    loadNewsCalendar(true)
+    loadNewsCalendar(false)
   }, [newsCalendarOpen, asset])
 
   useEffect(() => {
@@ -6592,10 +6593,8 @@ export default function App() {
         onChartMode={handleChartMode}
         onNews={() => setNewsCalendarOpen(true)}
         onMenu={() => setMenuOpen(true)}
-        autoState={{ scan: autoAnalysisStatus, entry: activeAnalysis?.diamond_auto_entry }}
         newsRisk={(newsIntelligence || activeAnalysis?.news_intelligence)?.risk_level}
-        backendOffline={backendOffline}
-        feedMatched={activeProviderAlignment?.matched}
+        communityUrl={telegramCommunity?.url || DEFAULT_TELEGRAM_COMMUNITY_URL}
       />
 
       <AppNotice
@@ -6771,7 +6770,6 @@ export default function App() {
 
       <AccountDrawer
         open={accountPanelOpen}
-        communityUrl={telegramCommunity?.url || DEFAULT_TELEGRAM_COMMUNITY_URL}
         onClose={() => setAccountPanelOpen(false)}
       />
 

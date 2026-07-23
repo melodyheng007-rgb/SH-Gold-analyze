@@ -1,6 +1,6 @@
 /*
  * SH Market Analyzer - reversible Modern 2026 workspace layer.
- * Remove this import from main.jsx to restore the V3.8.6 visual layer.
+ * Remove this import from main.jsx to restore the V3.8.7 base visual layer.
  */
 
 :root {
@@ -91,6 +91,7 @@
 
 .modern-ui-2026 .toolbar-actions { gap: 6px; }
 .modern-ui-2026 .toolbar-actions button,
+.modern-ui-2026 .community-toolbar-action,
 .modern-ui-2026 .auto-engine-status,
 .modern-ui-2026 .account-control {
   min-height: 40px;
@@ -109,6 +110,10 @@
 .modern-ui-2026 .auto-engine-status {
   min-width: 138px;
   background: #0f151c;
+}
+.modern-ui-2026 .community-toolbar-action {
+  min-width: 138px;
+  background: #0c1c24;
 }
 .modern-ui-2026 .auto-engine-status.watching { background: #0c1820; }
 .modern-ui-2026 .auto-engine-status.scanning { background: #1b180d; }
@@ -510,6 +515,7 @@
     gap: 5px;
   }
   .modern-ui-2026 .top-toolbar.signal-mode .toolbar-actions button,
+  .modern-ui-2026 .top-toolbar.signal-mode .community-toolbar-action,
   .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status,
   .modern-ui-2026 .top-toolbar.signal-mode .account-control {
     width: 100%;
@@ -523,6 +529,9 @@
   .modern-ui-2026 .top-toolbar.signal-mode .account-control > span,
   .modern-ui-2026 .top-toolbar.signal-mode .account-control > button { display: none !important; }
   .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status { gap: 5px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .community-toolbar-action { gap: 5px; }
+  .modern-ui-2026 .top-toolbar.signal-mode .community-toolbar-action small { display: none; }
+  .modern-ui-2026 .top-toolbar.signal-mode .community-toolbar-action strong { font-size: 9px; }
   .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status small { display: none; }
   .modern-ui-2026 .top-toolbar.signal-mode .auto-engine-status strong { font-size: 9px; }
   .modern-ui-2026 .top-toolbar.signal-mode .account-control { justify-content: center; }
@@ -643,16 +652,19 @@
   .modern-ui-2026 .signal-news-chip { top: 4px; right: 4px; }
 
   .modern-ui-2026 .intelligence-dock-head {
-    grid-template-columns: 104px minmax(0, 1fr) 38px;
+    grid-template-columns: minmax(0, 1fr) 38px;
     min-height: 39px;
   }
-  .modern-ui-2026 .intelligence-dock-head > div { padding: 4px 6px; }
-  .modern-ui-2026 .intelligence-dock-head > div span { font-size: 6px; }
-  .modern-ui-2026 .intelligence-dock-head > div strong { font-size: 9px; }
-  .modern-ui-2026 .intelligence-dock-head nav { overflow-x: auto; }
+  .modern-ui-2026 .intelligence-dock-head > div { display: none; }
+  .modern-ui-2026 .intelligence-dock-head nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: hidden;
+    padding-left: 0;
+  }
   .modern-ui-2026 .intelligence-dock-head nav button {
-    min-width: 82px;
-    padding-inline: 6px;
+    min-width: 0;
+    padding-inline: 4px;
     font-size: 7px;
   }
   .modern-ui-2026 .intelligence-dock-head nav button b { display: none; }
